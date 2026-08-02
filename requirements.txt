@@ -1,0 +1,17 @@
+# Systematic Risk Macro Dashboard — dependencies
+# Install with:  pip install -r requirements.txt
+#
+# Lower bounds only, so pip can pick current versions. If a future release of
+# yfinance or Streamlit breaks something, pin the version that worked for you
+# by changing >= to ==.
+
+streamlit>=1.50.0          # the app framework and all UI widgets.
+                           # 1.50+ is required for the `width="stretch"` API;
+                           # older versions need `use_container_width=True`.
+yfinance>=0.2.40           # FX, equities, commodities, VIX (free, no API key)
+pandas>=2.0.0              # all the time series handling
+pandas-datareader>=0.10.0  # FRED access for Treasury yields and credit spreads
+plotly>=5.20.0             # the charts
+numpy>=1.24.0              # required by pandas/yfinance; listed explicitly
+requests>=2.31.0           # HTTP layer used by both data libraries
+lxml>=4.9.0                # HTML/XML parsing used by yfinance and datareader

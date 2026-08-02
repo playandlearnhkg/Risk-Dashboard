@@ -1,0 +1,47 @@
+# =============================================================================
+# FINRA MARGIN STATISTICS
+# =============================================================================
+# !! THE ROWS BELOW ARE ILLUSTRATIVE PLACEHOLDER DATA, NOT REAL FINRA FIGURES !!
+#
+# They exist only so the charts render on first launch. Every row is flagged
+# is_placeholder=TRUE, which means the leverage component is EXCLUDED from the
+# risk score and the dashboard shows a warning banner.
+#
+# TO MAKE THIS REAL (takes about two minutes, once a month):
+#   1. Open https://www.finra.org/investors/insights/investing/margin-statistics
+#   2. Copy the last ~24 months of the table into the columns below.
+#   3. Set is_placeholder to FALSE on every row you have verified.
+#   4. Save. Hit "Refresh data" in the dashboard.
+#
+# You can also do all of this inside the app: the "Leverage & Positioning" tab
+# has an editable table and a CSV download/upload, no text editor needed.
+#
+# UNITS: millions of USD (this is FINRA's own unit — do not rescale).
+# month: use the first day of the month the figure refers to, YYYY-MM-01.
+# =============================================================================
+month,debit_balances_musd,free_credit_cash_musd,free_credit_margin_musd,is_placeholder
+2024-06-01,784000,102000,142000,TRUE
+2024-07-01,796000,101500,143500,TRUE
+2024-08-01,789000,103000,145000,TRUE
+2024-09-01,813000,102500,144000,TRUE
+2024-10-01,822000,101000,143000,TRUE
+2024-11-01,849000,100500,141500,TRUE
+2024-12-01,872000,99000,140000,TRUE
+2025-01-01,881000,100000,141000,TRUE
+2025-02-01,893000,99500,140500,TRUE
+2025-03-01,872000,103000,145500,TRUE
+2025-04-01,846000,107000,150000,TRUE
+2025-05-01,879000,104000,147000,TRUE
+2025-06-01,911000,102000,145000,TRUE
+2025-07-01,940000,101000,143500,TRUE
+2025-08-01,952000,100500,143000,TRUE
+2025-09-01,978000,99500,142000,TRUE
+2025-10-01,1006000,98500,141000,TRUE
+2025-11-01,1024000,98000,140000,TRUE
+2025-12-01,1057000,97000,139000,TRUE
+2026-01-01,1072000,97500,139500,TRUE
+2026-02-01,1094000,96500,138500,TRUE
+2026-03-01,1081000,99000,141500,TRUE
+2026-04-01,1063000,101500,144000,TRUE
+2026-05-01,1098000,99000,141000,TRUE
+2026-06-01,1126000,98000,140000,TRUE
