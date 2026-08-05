@@ -50,6 +50,7 @@ LOG_PATH = BASE / "assemble.log"
 START, END = "2015-01-01", "2025-12-31"
 LIQ_WINDOW = 63          # ~3 months, for ADV / ADTV
 ATR_WINDOW = 14
+BETA_WINDOW = 252        # ~1 year of daily returns, for beta vs SPY
 
 # Sigma section 2C needs a sector benchmark. XLRE is absent from the HF
 # universe, so Real Estate uses IYR (iShares US Real Estate) instead.
@@ -106,6 +107,16 @@ def benchmark_o2c(ticker: str) -> pd.Series | None:
     return s.rename(ticker)
 
 
+def benchmark_daily_ret(ticker: str) -> pd.Series | None:
+    """Close-to-close simple return, used to estimate beta."""
+    df = load_ticker(ticker)
+    if df is None:
+        return None
+    s = df["close"].pct_change()
+    s.index = df["date"]
+    return s.rename(f"{ticker}_ret")
+
+
 def load_earnings() -> pd.DataFrame:
     files = sorted(EARN_DIR.glob("*.parquet"))
     if not files:
@@ -131,6 +142,7 @@ def load_shares(ticker: str) -> pd.Series | None:
 def build_ticker_panel(
     ticker: str, sector: str, earnings: pd.DataFrame,
     spy: pd.Series, sector_series: dict[str, pd.Series],
+    spy_ret: pd.Series | None = None,
 ) -> pd.DataFrame | None:
     df = load_ticker(ticker)
     if df is None or len(df) < 300:
@@ -236,6 +248,26 @@ def build_ticker_panel(
     ser = sector_series.get(etf) if etf else None
     df["sector_o2c"] = ser.reindex(df["date"]).to_numpy() if ser is not None else np.nan
 
+    # --- Beta and market-adjusted (abnormal) returns ---
+    # Beta from a trailing window of daily close-to-close returns against
+    # SPY, lagged one day so it is knowable before the event. The abnormal
+    # return strips out the market component of the T+1 session: an
+    # earnings edge should live in the stock-specific move, not in the fact
+    # that the whole market happened to rise that day.
+    if spy_ret is not None:
+        df["spy_ret"] = spy_ret.reindex(df["date"]).to_numpy()
+        cov = df["daily_ret"].rolling(BETA_WINDOW).cov(df["spy_ret"])
+        var = df["spy_ret"].rolling(BETA_WINDOW).var()
+        df["beta"] = (cov / var).shift(1)
+    else:
+        df["spy_ret"] = np.nan
+        df["beta"] = np.nan
+    df["ab_o2c"] = df["o2c"] - df["beta"] * df["spy_o2c"]
+    if ser is not None:
+        df["sector_excess_o2c"] = df["o2c"] - df["sector_o2c"]
+    else:
+        df["sector_excess_o2c"] = np.nan
+
     df["ticker"] = ticker
     df["sector"] = sector
     return df[(df["date"] >= START) & (df["date"] <= END)]
@@ -248,6 +280,7 @@ def main() -> None:
     log(f"earnings rows={len(earnings)} tickers={earnings['ticker'].nunique()}")
 
     spy = benchmark_o2c("SPY")
+    spy_ret = benchmark_daily_ret("SPY")
     if spy is None:
         raise RuntimeError("SPY derived file missing")
     sector_series = {}
@@ -263,7 +296,8 @@ def main() -> None:
     tickers = sorted(stocks)
     for i, t in enumerate(tickers, 1):
         try:
-            p = build_ticker_panel(t, stocks[t].get("sector"), earnings, spy, sector_series)
+            p = build_ticker_panel(t, stocks[t].get("sector"), earnings, spy,
+                                   sector_series, spy_ret)
             if p is not None and not p.empty:
                 frames.append(p)
         except Exception as exc:  # noqa: BLE001

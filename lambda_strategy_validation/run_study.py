@@ -41,6 +41,52 @@ def md(df: pd.DataFrame, floatfmt: str = ".4f") -> str:
 
 # ---------------------------------------------------------------------------
 
+# The provider's data source changes on 2022-03-01: post-break volume is
+# IEX's own prints, not the consolidated tape, so reported volume drops by
+# roughly an order of magnitude (median ADTV ~$100M -> ~$7M). Sigma's
+# absolute $50M / 500k thresholds are calibrated on consolidated volume and
+# silently reject ~97% of post-break rows, which would quietly turn a
+# 2015-2025 study into a 2015-2022 one. Prices are unaffected (IEX prints
+# are real trades), so only the two volume filters need break handling.
+IEX_BREAK = pd.Timestamp("2022-03-01")
+# The 63-day rolling windows straddle the break for a quarter afterwards,
+# so the blended period is excluded from the calibration.
+CALIB_END = IEX_BREAK - pd.Timedelta(days=1)
+BLEND_END = IEX_BREAK + pd.Timedelta(days=120)
+
+
+def break_aware_liquidity(panel: pd.DataFrame) -> tuple[pd.Series, dict]:
+    """
+    Apply Sigma's absolute liquidity thresholds before the IEX break, and
+    the cross-sectionally EQUIVALENT thresholds after it.
+
+    Equivalent means: measure what fraction of the pre-break universe
+    cleared each absolute cutoff, then post-break keep that same top
+    fraction of names by the same measure, ranked within each date. This
+    preserves the economic intent of the filter ("the most liquid ~N% of
+    large caps") across a source change that rescales the units.
+    """
+    pre = panel["date"] <= CALIB_END
+    target = {}
+    for col, flag in (("adv_63_prev", "adv_ok_prev"), ("adtv_63_prev", "adtv_ok_prev")):
+        target[col] = float(panel.loc[pre, flag].astype("boolean").fillna(False).mean())
+
+    ok = pd.Series(True, index=panel.index)
+    for col, flag in (("adv_63_prev", "adv_ok_prev"), ("adtv_63_prev", "adtv_ok_prev")):
+        absolute = panel[flag].astype("boolean").fillna(False)
+        pct = panel.groupby("date")[col].rank(pct=True, method="average")
+        relative = (pct >= (1.0 - target[col])).fillna(False)
+        ok &= np.where(panel["date"] <= CALIB_END, absolute, relative)
+
+    # Rows whose trailing window straddles the break mix two unit systems.
+    straddle = (panel["date"] > CALIB_END) & (panel["date"] <= BLEND_END)
+    ok &= ~straddle
+    diag = {"adv_target_pct": target["adv_63_prev"],
+            "adtv_target_pct": target["adtv_63_prev"],
+            "n_rows_straddle_excluded": int(straddle.sum())}
+    return ok, diag
+
+
 def apply_universe(panel: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """
     Sigma section 1 filters, evaluated on the session BEFORE the event.
@@ -50,6 +96,8 @@ def apply_universe(panel: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     compound the dataset's survivorship bias, so a liquidity proxy is used
     for them — and validated here before it is trusted.
     """
+    liquidity_ok, liq_diag = break_aware_liquidity(panel)
+
     known = panel[panel["market_cap_prev"].notna()]
     liquid_known = known[known["adtv_ok_prev"] == True]  # noqa: E712
     if len(liquid_known):
@@ -59,12 +107,11 @@ def apply_universe(panel: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 
     mcap_effective = panel["mcap_ok_prev"].astype("boolean")
     proxied = panel["market_cap_prev"].isna()
-    mcap_effective = mcap_effective.where(~proxied, panel["adtv_ok_prev"].astype("boolean"))
+    mcap_effective = mcap_effective.where(~proxied, liquidity_ok)
 
     keep = (
         panel["price_ok_prev"].astype("boolean").fillna(False)
-        & panel["adv_ok_prev"].astype("boolean").fillna(False)
-        & panel["adtv_ok_prev"].astype("boolean").fillna(False)
+        & liquidity_ok
         & mcap_effective.fillna(False)
     )
     diag = {
@@ -74,6 +121,7 @@ def apply_universe(panel: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
         "n_tickers_mcap_known": int(panel.loc[panel["market_cap_prev"].notna(), "ticker"].nunique()),
         "n_tickers_mcap_proxied": int(panel.loc[proxied, "ticker"].nunique()),
         "pct_events_proxied": float(proxied[keep].mean()) if keep.any() else np.nan,
+        **liq_diag,
     }
     return panel[keep].copy(), diag
 
