@@ -202,6 +202,25 @@ def add_event_features(ev: pd.DataFrame) -> pd.DataFrame:
     # Signed return of trading the gap direction from open to close.
     df["signed_o2c"] = np.where(df["gap_up"], df["o2c"], -df["o2c"])
 
+    # TRADEABLE return for any rule conditioned on the opening pattern.
+    #
+    # This is not a refinement, it is a correctness fix. The first three
+    # 5-minute candles run 09:30-09:45 and are therefore PART of the
+    # open-to-close return. Scoring an opening-pattern filter against
+    # open-to-close double-counts that window: a pattern that moved with
+    # the gap mechanically guarantees the first 15 minutes of the return it
+    # is being credited for. Measured that way the "+ pattern" showed
+    # +168 bps and a 79% win rate — an artefact, not an edge.
+    #
+    # A trader acting on the pattern can only enter once it is complete, at
+    # 09:45. The honest measurement is therefore c3_close -> session close.
+    post = df["close"] / df["c3_close"] - 1.0
+    df["post_pattern_ret"] = post
+    df["signed_post_pattern"] = np.where(df["gap_up"], post, -post)
+    df["post_continuation"] = np.where(
+        df["c3_close"].isna(), np.nan,
+        (post > 0) == df["gap_up"]).astype("float")
+
     df["pattern"] = df.apply(classify_opening_pattern, axis=1)
     df["pattern_plus"] = df["pattern"].isin([PATTERN_STRONG, PATTERN_MODERATE])
     df["pattern_nowick"] = df.apply(classify_opening_pattern_nowick, axis=1)
@@ -343,11 +362,19 @@ def spread_series(ev: pd.DataFrame, source: str = "roll") -> pd.Series:
 
 
 def net_of_costs(ev: pd.DataFrame, spread_multiplier: float = 1.0,
-                 impact_bps: float = 0.0, source: str = "roll") -> pd.Series:
-    """Round-trip cost = 2 legs x (half-spread x multiplier + impact)."""
+                 impact_bps: float = 0.0, source: str = "roll",
+                 gross_col: str = "signed_o2c") -> pd.Series:
+    """
+    Round-trip cost = 2 legs x (half-spread x multiplier + impact).
+
+    gross_col selects the gross return being charged. Use the default
+    'signed_o2c' for open-to-close rules, and 'signed_post_pattern' for
+    anything conditioned on the opening three candles — see
+    add_event_features for why mixing them is a look-ahead error.
+    """
     half_spread_bps = spread_series(ev, source) / 2.0
     per_leg = half_spread_bps * spread_multiplier + impact_bps
-    return ev["signed_o2c"] - 2.0 * per_leg / 10_000.0
+    return ev[gross_col] - 2.0 * per_leg / 10_000.0
 
 
 def cost_ladder(ev: pd.DataFrame) -> pd.DataFrame:
@@ -378,10 +405,12 @@ def cost_ladder(ev: pd.DataFrame) -> pd.DataFrame:
 def expectancy_table(ev: pd.DataFrame, by: list[str],
                      spread_multiplier: float = 1.0,
                      impact_bps: float = 2.0,
-                     source: str = "roll") -> pd.DataFrame:
+                     source: str = "roll",
+                     gross_col: str = "signed_o2c") -> pd.DataFrame:
     """Win rate / mean net return / profit factor / n, grouped."""
     df = ev.copy()
-    df["net"] = net_of_costs(df, spread_multiplier, impact_bps, source)
+    df["net"] = net_of_costs(df, spread_multiplier, impact_bps, source, gross_col)
+    df = df.dropna(subset=["net"])
     rows = []
     for key, g in df.groupby(by):
         g = g.dropna(subset=["net"])

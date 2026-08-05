@@ -154,14 +154,31 @@ def main() -> None:
         name="n")
     dist["share"] = dist["n"] / dist["n"].sum()
     results["pattern_distribution"] = dist
+    # NAIVE (open-to-close) scoring is retained ONLY to document the
+    # look-ahead artefact it produces; the tradeable numbers are the
+    # post-pattern ones below.
+    results["pattern_naive_LOOKAHEAD"] = A.expectancy_table(pat, ["pattern_plus"])
     results["pattern_continuation"] = A.quadrant_stats(pat, ["pattern"])
-    results["pattern_expectancy"] = A.expectancy_table(pat, ["pattern"])
-    results["pattern_plus_vs_not"] = A.expectancy_table(pat, ["pattern_plus"])
+    results["pattern_expectancy"] = A.expectancy_table(
+        pat, ["pattern"], gross_col="signed_post_pattern")
+    results["pattern_plus_vs_not"] = A.expectancy_table(
+        pat, ["pattern_plus"], gross_col="signed_post_pattern")
+    # Continuation rate measured only over the tradeable 09:45 -> close window.
+    rows = []
+    for key, g in pat.groupby("pattern_plus"):
+        g = g.dropna(subset=["post_continuation"])
+        if g.empty:
+            continue
+        r = A.clustered_rate_vs_half(g["post_continuation"].astype(bool), g["date"])
+        rows.append({"pattern_plus": key, "n": r["n"], "n_dates": r["n_clusters"],
+                     "post_0945_continuation_rate": r["rate"], "ci_lo": r["lo"],
+                     "ci_hi": r["hi"], "p_clustered": r["p"]})
+    results["pattern_post0945_continuation"] = pd.DataFrame(rows)
     # Sensitivity: same analysis with the interpreted rejection-wick clause
     # removed, to show whether any pattern effect depends on that choice.
     pat_nw = ev[ev["pattern_nowick"].notna()]
     results["pattern_sensitivity_nowick"] = A.expectancy_table(
-        pat_nw, ["pattern_plus_nowick"])
+        pat_nw, ["pattern_plus_nowick"], gross_col="signed_post_pattern")
     results["pattern_dist_nowick"] = (
         pat_nw["pattern_nowick"].value_counts().rename_axis("pattern")
         .reset_index(name="n"))
@@ -169,8 +186,10 @@ def main() -> None:
     # --- 3.5 Full interaction ---------------------------------------------
     full = pat[(pat["stage_prev"] == 2.0) & (pat["pattern_plus"]) &
                (pat["beta_ok"] == True)]  # noqa: E712
-    results["full_interaction"] = A.expectancy_table(full, ["gap_up"]) if len(full) else pd.DataFrame()
-    results["full_interaction_all"] = A.expectancy_table(full, ["stage_name"]) if len(full) else pd.DataFrame()
+    results["full_interaction"] = (A.expectancy_table(
+        full, ["gap_up"], gross_col="signed_post_pattern") if len(full) else pd.DataFrame())
+    results["full_interaction_all"] = (A.expectancy_table(
+        full, ["stage_name"], gross_col="signed_post_pattern") if len(full) else pd.DataFrame())
 
     # --- 3.6 Robustness ----------------------------------------------------
     results["by_year"] = A.quadrant_stats(ev, ["year"])
