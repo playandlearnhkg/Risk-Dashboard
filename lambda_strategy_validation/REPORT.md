@@ -272,6 +272,14 @@ VIX itself is not available in the connected sources (no continuous daily series
 4. **1-minute bars are not tick data.** The opening-candle classification and the spread estimators are built on 1-minute sampling, not the order book. Corwin-Schultz and Roll are estimators, not quoted spreads.
 5. **No borrow costs or short-availability modelling.** Gap-down continuation trades are short trades; their real-world cost is understated.
 
+## 9b. Two additional findings from the extended analysis
+
+**Per-stock scan (496 tickers).** 25 names clear p<0.05 on their own continuation rate. Chance alone predicts 24.8. After a Benjamini-Hochberg correction across the family of tests, **zero** survive. The per-stock leaderboard is therefore a picture of noise, not a shortlist — the top name (CAR, +697 bps) carries q = 0.90.
+
+**One sector does survive.** Communication Services returns +40.1 bps net per trade (date-clustered p = 0.0040), which clears a Bonferroni threshold of 0.0045 for 11 sector tests. It is positive in all 11 years and still significant after dropping its 20 largest moves (+35.4 bps, p = 0.004). Caveats that keep this CONDITIONAL rather than promotable: 35 tickers only, concentration in SNAP / LUMN / NTES / ROKU, a continuation *rate* of just 52.6% (p = 0.16) meaning the result rests on return asymmetry rather than hit rate, and the sector itself did not exist as a GICS grouping until 2018.
+
+**Entry timing (1-minute bars).** Sweeping the entry minute by minute over 09:31-09:59 and holding to the close, **no entry time is profitable net of costs** — the best (09:31) returns -2.0 bps at p = 0.40, and later entries get steadily worse. The full-session signed drift is only 8.9 bps, of which 44% is priced within the first minute and 81% by 09:45. So a faster trigger does not rescue the edge: the move is real and highly significant, but it is smaller than the cost of capturing it.
+
 ## 10. Recommended next experiments
 
 1. **Rebuild the universe without survivorship bias.** This is the single highest-value next step: the current universe cannot distinguish a real edge from selection. A point-in-time index-membership source (or a delisted-inclusive vendor) would settle it.

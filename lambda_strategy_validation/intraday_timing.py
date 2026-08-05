@@ -71,8 +71,22 @@ def load_intraday_for_events(ev: pd.DataFrame) -> pd.DataFrame:
     raw = pd.concat(frames, ignore_index=True)
     wide = raw.pivot_table(index=["ticker", "date"], columns="minute",
                            values="close", aggfunc="last")
-    wide.columns = [f"m{int(c)}" for c in wide.columns]
+    wide = wide.reindex(columns=range(MAX_MIN))
     sess = raw.groupby(["ticker", "date"])[["session_open", "session_close"]].first()
+
+    # A minute with no print does not mean "no price" — it means no trade
+    # occurred, so the prevailing price is still the last one printed. That
+    # is exactly what a trader faces, so the gaps are forward-filled from
+    # the session open. This is what makes the entry sweep legitimate:
+    # every session then carries a price at every minute, so the sample is
+    # identical at every entry time. The alternatives are both broken —
+    # dropping missing minutes makes the sample change with k (composition
+    # masquerading as timing), and requiring a print in all 29 minutes
+    # selects on information from 09:59 that nobody has at 09:31.
+    wide.insert(0, "seed", sess["session_open"])
+    wide = wide.ffill(axis=1)
+    wide = wide.drop(columns="seed")
+    wide.columns = [f"m{int(c)}" for c in wide.columns]
     return wide.join(sess).reset_index()
 
 
@@ -87,6 +101,25 @@ def main() -> None:
 
     df = ev.merge(wide, on=["ticker", "date"], how="inner", suffixes=("", "_id"))
     log(f"joined: {len(df):,}")
+
+    # SAMPLE DEFINITION — this is the whole ballgame for a timing sweep.
+    # The forward-fill in load_intraday_for_events (see its comment) makes
+    # the sample identical at every entry minute, which is what the sweep
+    # needs. Two earlier attempts were both wrong and are worth recording:
+    #
+    # (1) DROPPING missing minutes made the sample change with k, so
+    #     composition masqueraded as timing — sessions printing in the
+    #     first minute show 32.7 bps of open-to-close drift against 8.9 bps
+    #     overall, which made late entries look spuriously profitable.
+    # (2) REQUIRING a print in all 29 minutes fixed the imbalance but
+    #     selected on whether the stock would still be trading at 09:59 —
+    #     information nobody has at 09:31. On that sample a 09:31 entry
+    #     showed +32 bps at p<0.001, which was pure look-ahead.
+    minute_cols = [f"m{k}" for k in range(1, MAX_MIN) if f"m{k}" in df.columns]
+    df = df[df["session_open"].notna() & df["session_close"].notna()].reset_index(drop=True)
+    log(f"sample after forward-fill: {len(df):,} sessions, "
+        f"{df[minute_cols].notna().all(axis=1).mean():.1%} complete at every minute")
+
     sign = np.where(df["gap_up"], 1.0, -1.0)
     spread_bps = A.spread_series(df)          # full spread, bps
     open_px = df["session_open"].where(df["session_open"].notna(), df["open"])
