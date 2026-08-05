@@ -57,9 +57,20 @@ import requests
 
 SEC_HEADERS = {"User-Agent": "Lambda Strategy Validation research@example.com"}
 TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
+# Filers are inconsistent about which concept carries share count, so try
+# a preference list and take the first with usable history. Verified by
+# probe: ABBV/V only have the dei cover-page tag, GOOGL only the us-gaap
+# balance-sheet tag, META only the weighted-average tags.
+CONCEPT_TAGS = [
+    ("dei", "EntityCommonStockSharesOutstanding"),
+    ("us-gaap", "CommonStockSharesOutstanding"),
+    ("us-gaap", "CommonStockSharesIssued"),
+    ("us-gaap", "WeightedAverageNumberOfDilutedSharesOutstanding"),
+    ("us-gaap", "WeightedAverageNumberOfSharesOutstandingBasic"),
+]
+MIN_SHARE_OBSERVATIONS = 4  # too few points can't support a daily ffill
 CONCEPT_URL_TEMPLATE = (
-    "https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}"
-    "/us-gaap/CommonStockSharesOutstanding.json"
+    "https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/{taxonomy}/{tag}.json"
 )
 
 # A quarter-over-quarter shares-outstanding ratio outside this band is
@@ -83,11 +94,21 @@ def _load_ticker_cik_map() -> dict[str, int]:
 
 
 def ticker_to_cik(ticker: str) -> int:
+    """
+    SEC writes share classes with a hyphen (BRK-B) where market-data
+    vendors use a dot (BRK.B), so both forms are tried.
+
+    NOTE: SEC's company_tickers.json lists CURRENT registrants only, so
+    tickers that were delisted or renamed during the study window (ATVI,
+    FB, CERN, ANTM, ...) have no entry at all. That is a survivorship
+    hazard, not a transient error — callers must not silently drop those
+    names. See assemble.py's market-cap proxy handling.
+    """
     m = _load_ticker_cik_map()
-    try:
-        return m[ticker.upper()]
-    except KeyError:
-        raise ValueError(f"No SEC CIK found for ticker {ticker!r}")
+    for candidate in (ticker.upper(), ticker.upper().replace(".", "-")):
+        if candidate in m:
+            return m[candidate]
+    raise ValueError(f"No SEC CIK found for ticker {ticker!r} (likely delisted)")
 
 
 def fetch_shares_outstanding_history(ticker: str, timeout: int = 30) -> pd.DataFrame:
@@ -95,19 +116,34 @@ def fetch_shares_outstanding_history(ticker: str, timeout: int = 30) -> pd.DataF
     Returns one row per SEC filing that disclosed shares outstanding, with
     columns [filed, end, shares, form]. `filed` is the date this figure
     became public — that is the correct column to use for point-in-time
-    joins. Deduplicated to the latest filing per `filed` date.
+    joins. Deduplicated to the latest reported period per `filed` date.
     """
     cik = ticker_to_cik(ticker)
-    url = CONCEPT_URL_TEMPLATE.format(cik=cik)
-    resp = requests.get(url, headers=SEC_HEADERS, timeout=timeout)
-    resp.raise_for_status()
-    units = resp.json()["units"]["shares"]
-    df = pd.DataFrame(units)[["filed", "end", "val", "form"]].rename(
-        columns={"val": "shares"}
-    )
+    units = None
+    for taxonomy, tag in CONCEPT_TAGS:
+        url = CONCEPT_URL_TEMPLATE.format(cik=cik, taxonomy=taxonomy, tag=tag)
+        resp = requests.get(url, headers=SEC_HEADERS, timeout=timeout)
+        if resp.status_code == 404:
+            continue
+        resp.raise_for_status()
+        payload = resp.json().get("units", {})
+        candidate = payload.get("shares")
+        if isinstance(candidate, list) and len(candidate) >= MIN_SHARE_OBSERVATIONS:
+            units = candidate
+            break
+    if not units:
+        raise ValueError(f"No shares-outstanding concept found for {ticker!r}")
+
+    df = pd.DataFrame(units)
+    for col in ("filed", "end", "val"):
+        if col not in df.columns:
+            raise ValueError(f"Unexpected SEC payload for {ticker!r}")
+    df = df[["filed", "end", "val", "form"]].rename(columns={"val": "shares"})
     df["filed"] = pd.to_datetime(df["filed"])
     df["end"] = pd.to_datetime(df["end"])
-    df = df.sort_values("filed").drop_duplicates("filed", keep="last")
+    # Sort on (filed, end) so "keep last" deterministically keeps the most
+    # recent reported period when one filing date carries several.
+    df = df.sort_values(["filed", "end"]).drop_duplicates("filed", keep="last")
     return df.reset_index(drop=True)
 
 
