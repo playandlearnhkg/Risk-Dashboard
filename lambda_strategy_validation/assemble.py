@@ -167,6 +167,19 @@ def build_ticker_panel(
     df["adv_63"] = df["share_volume"].rolling(LIQ_WINDOW, min_periods=LIQ_WINDOW).mean()
     df["adtv_63"] = df["dollar_volume"].rolling(LIQ_WINDOW, min_periods=LIQ_WINDOW).mean()
 
+    # Trailing typical spread, for the cost model. The EVENT-DAY spread
+    # estimate is not usable as a cost input: both estimators are inflated
+    # by the very range expansion the event causes, and Corwin-Schultz is
+    # badly biased on this data (it implies ~18 bps for AAPL, whose true
+    # quoted spread is well under 2 bps). A trailing median is both more
+    # realistic and knowable before the trade.
+    for src in ("roll_spread_bps", "corwin_schultz_bps"):
+        if src in df.columns:
+            df[f"{src}_med63"] = (df[src].rolling(LIQ_WINDOW, min_periods=20)
+                                  .median().shift(1))
+        else:
+            df[f"{src}_med63"] = np.nan
+
     # --- Market cap ---
     shares = load_shares(ticker)
     if shares is not None:
@@ -193,6 +206,7 @@ def build_ticker_panel(
     # --- Event flag: T+1 = first session strictly after an announcement ---
     ann = earnings[earnings["ticker"] == ticker]
     df["is_t1"] = False
+    df["is_ann_day"] = False
     df["ann_date"] = pd.NaT
     df["ann_time"] = pd.NA
     if not ann.empty:
@@ -203,6 +217,17 @@ def build_ticker_panel(
         df.loc[df.index[idx], "is_t1"] = True
         df.loc[df.index[idx], "ann_date"] = ann["ann_date"].to_numpy()[valid]
         df.loc[df.index[idx], "ann_time"] = ann["ann_time"].to_numpy()[valid]
+        # The announcement session itself. Sigma defines the event as the
+        # session AFTER the announcement, which is right for after-hours
+        # reporters but one day late for before-the-open reporters. Marking
+        # this day lets the report quantify that mis-dating instead of
+        # merely acknowledging it.
+        ann_pos = np.searchsorted(dates, ann["ann_date"].to_numpy(), side="left")
+        in_range = ann_pos < len(dates)
+        exact = np.zeros(len(ann), dtype=bool)
+        exact[in_range] = dates[ann_pos[in_range]] == ann["ann_date"].to_numpy()[in_range]
+        if exact.any():
+            df.loc[df.index[ann_pos[exact]], "is_ann_day"] = True
 
     # --- Benchmarks ---
     df["spy_o2c"] = spy.reindex(df["date"]).to_numpy()

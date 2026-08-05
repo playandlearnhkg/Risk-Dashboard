@@ -157,6 +157,14 @@ def main() -> None:
     results["pattern_continuation"] = A.quadrant_stats(pat, ["pattern"])
     results["pattern_expectancy"] = A.expectancy_table(pat, ["pattern"])
     results["pattern_plus_vs_not"] = A.expectancy_table(pat, ["pattern_plus"])
+    # Sensitivity: same analysis with the interpreted rejection-wick clause
+    # removed, to show whether any pattern effect depends on that choice.
+    pat_nw = ev[ev["pattern_nowick"].notna()]
+    results["pattern_sensitivity_nowick"] = A.expectancy_table(
+        pat_nw, ["pattern_plus_nowick"])
+    results["pattern_dist_nowick"] = (
+        pat_nw["pattern_nowick"].value_counts().rename_axis("pattern")
+        .reset_index(name="n"))
 
     # --- 3.5 Full interaction ---------------------------------------------
     full = pat[(pat["stage_prev"] == 2.0) & (pat["pattern_plus"]) &
@@ -176,9 +184,29 @@ def main() -> None:
     results["cost_by_stage"] = A.expectancy_table(ev, ["stage_name"])
 
     # --- BMO/AMC contamination diagnostic ---------------------------------
-    ann_day = universe[universe["is_t1"]].copy()
-    results["timing_diag"] = pd.DataFrame([{
-        "note": "share of events whose announcement time is known",
+    # If most reporters were after-hours, the T+1 session should carry the
+    # volatility spike and the announcement session should look ordinary.
+    # Elevated volatility on the announcement day itself means a material
+    # share reported BEFORE the open and Sigma's T+1 is one session late
+    # for them. This measures that directly instead of just flagging it.
+    if "is_ann_day" in universe.columns:
+        base = universe[~universe["is_t1"] & ~universe["is_ann_day"]]
+        med = base.groupby(["ticker", base["date"].dt.to_period("Q")])["tr_pct"].median()
+        rows = []
+        for label, mask in (("announcement session (T+0)", universe["is_ann_day"]),
+                            ("first session after (T+1)", universe["is_t1"])):
+            g = universe[mask].copy()
+            key = list(zip(g["ticker"], g["date"].dt.to_period("Q")))
+            g["base"] = med.reindex(key).to_numpy()
+            ratio = (g["tr_pct"] / g["base"]).replace([np.inf, -np.inf], np.nan)
+            b = A.clustered_bootstrap(ratio - 1.0, g["date"])
+            rows.append({"session": label, "n": b["n"],
+                         "median_tr_ratio": float(ratio.median()),
+                         "mean_excess": b["stat"], "ci_lo": b["lo"],
+                         "ci_hi": b["hi"]})
+        results["timing_diag"] = pd.DataFrame(rows)
+    results["timing_known"] = pd.DataFrame([{
+        "note": "share of events whose announcement time-of-day is known",
         "known_time_share": float((ev["ann_time"].notna() &
                                    (ev["ann_time"] != "time-not-supplied")).mean()),
     }])

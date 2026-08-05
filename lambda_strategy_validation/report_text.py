@@ -17,7 +17,7 @@ MIN_NET_BPS = 5.0          # net edge must beat 5 bps/trade to be economic
 MAX_P = 0.05               # date-clustered p-value ceiling
 MIN_POSITIVE_YEAR_FRAC = 0.70   # >=70% of years positive for PROMOTE
 MIN_STAGE_CONSISTENCY = 3  # net edge positive in all 3 stages for PROMOTE
-HEADLINE_COST_SCENARIO = "measured + 2bps impact"
+HEADLINE_COST_SCENARIO = "Roll + 2bps impact"
 
 
 def md(df: pd.DataFrame | None, floatfmt: str = ".4f") -> str:
@@ -155,9 +155,16 @@ def build_report(ev: pd.DataFrame, R: dict, diag: dict) -> str:
       "binomial p-values are shown alongside for contrast and are systematically "
       "too optimistic.")
     A("")
-    A("**Costs.** Each event is charged its **own measured spread** "
-      "(Corwin-Schultz, falling back to Roll) rather than a global constant, "
-      "on both legs, plus an explicit impact allowance.")
+    A("**Costs.** Each event is charged its ticker's **own measured trailing "
+      "spread** on both legs, plus an explicit impact allowance. The Roll "
+      "estimator is used as the primary input because it is realistically "
+      "calibrated on this data (median ~1.9 bps for AAPL). Corwin-Schultz, "
+      "although the more common high-low estimator, is inflated here by roughly "
+      "an order of magnitude (median ~18 bps for AAPL, against a true quoted "
+      "spread well under 2 bps) because it reads earnings-day range expansion as "
+      "spread; it is therefore reported only as a pessimistic upper bound. "
+      "The trailing median is also lagged one day, so the cost input is knowable "
+      "before the trade.")
     A("")
 
     A("## 2. Volatility elevation on T+1 (section 3.1)")
@@ -213,6 +220,14 @@ def build_report(ev: pd.DataFrame, R: dict, diag: dict) -> str:
     A("### `+` patterns vs everything else")
     A("")
     A(md(R.get("pattern_plus_vs_not")))
+    A("### Sensitivity: same split with the rejection-wick clause removed")
+    A("")
+    A("Sigma's wording (\"strong rejection wicks against the gap direction\") needs "
+      "an interpreted threshold. If the pattern effect only exists under one "
+      "reading of that clause, it is an artefact of the definition rather than a "
+      "property of the market.")
+    A("")
+    A(md(R.get("pattern_sensitivity_nowick")))
 
     A("## 6. Full interaction (section 3.5)")
     A("")
@@ -258,13 +273,19 @@ def build_report(ev: pd.DataFrame, R: dict, diag: dict) -> str:
       "*because* they survived. The provider discloses survivorship bias pre-2022 "
       "directly. Any edge measured here is biased upward, so a weak positive "
       "result should be read as consistent with no edge.")
-    A("2. **BMO vs AMC announcement timing.** Sigma defines T+1 as the first "
-      "session after the announcement date. For companies reporting *before* the "
-      "open, the true reaction day is the announcement date itself, so those "
-      "events are measured one session late. The Nasdaq feed supplies an explicit "
-      "time-of-day flag for only a minority of historical rows "
-      f"({_get(R.get('timing_diag', pd.DataFrame()), 'known_time_share', float('nan')):.1%} "
-      "of events here), so the contamination cannot be fully removed.")
+    known_share = _get(R.get("timing_known", pd.DataFrame()), "known_time_share",
+                       float("nan"))
+    A("2. **BMO vs AMC announcement timing (measured below, not just flagged).** "
+      "Sigma defines T+1 as the first session after the announcement date. For "
+      "companies reporting *before* the open, the true reaction day is the "
+      "announcement date itself, so those events are measured one session late. "
+      "The Nasdaq feed supplies an explicit time-of-day flag for only "
+      f"{known_share:.1%} of the events here. The table below compares "
+      "volatility elevation on the announcement session against the T+1 session: "
+      "if the announcement session is also elevated, a material share of the "
+      "sample is mis-dated.")
+    A("")
+    A(md(R.get("timing_diag")))
     A("3. **IEX source break (2022-03-01).** Volumes are not directly comparable "
       "across the provider's data-source transition, which affects ADV/ADTV "
       "filters and any volume-based inference spanning that date.")

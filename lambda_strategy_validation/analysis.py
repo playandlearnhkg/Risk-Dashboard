@@ -15,8 +15,13 @@ CONDITIONAL over false positives"):
     binomial test AND the clustered bootstrap; where the two disagree the
     clustered result is the one reported, since the binomial assumes
     independence the data does not have.
-  * Transaction costs use each observation's OWN measured spread
-    (Corwin-Schultz, falling back to Roll) rather than a global constant.
+  * Transaction costs use each ticker's OWN measured trailing spread
+    rather than a global constant. The Roll estimator is the primary
+    input: on this data it is realistically calibrated (~1.9 bps median
+    for AAPL), whereas Corwin-Schultz is inflated by roughly an order of
+    magnitude (~18 bps median for AAPL, against a true quoted spread well
+    under 2 bps) because it reads range expansion as spread. CS is kept
+    only as a deliberately pessimistic upper-bound scenario.
 """
 
 from __future__ import annotations
@@ -145,6 +150,43 @@ def classify_opening_pattern(row: pd.Series) -> str:
     return PATTERN_INDECISION
 
 
+def classify_opening_pattern_nowick(row: pd.Series) -> str:
+    """
+    Sensitivity variant: identical to classify_opening_pattern but with the
+    rejection-wick clause removed. Sigma's prose ("strong rejection wicks
+    against the gap direction") requires an interpreted threshold, so the
+    report shows whether any pattern effect survives dropping that clause.
+    """
+    gap = row.get("gap")
+    if pd.isna(gap) or gap == 0:
+        return PATTERN_INDECISION
+    need = [f"c{i}_{f}" for i in (1, 2, 3) for f in ("open", "high", "low", "close")]
+    if any(pd.isna(row.get(c)) for c in need):
+        return None
+    up = gap > 0
+    dirs, bodies = [], []
+    for i in (1, 2, 3):
+        o, c = row[f"c{i}_open"], row[f"c{i}_close"]
+        bodies.append(abs(c - o))
+        dirs.append(1 if c > o else (-1 if c < o else 0))
+    want = 1 if up else -1
+    agree = sum(1 for d in dirs if d == want)
+    against = sum(1 for d in dirs if d == -want)
+    highs = [row[f"c{i}_high"] for i in (1, 2, 3)]
+    lows = [row[f"c{i}_low"] for i in (1, 2, 3)]
+    progressive = (highs[0] < highs[1] < highs[2]) if up else (lows[0] > lows[1] > lows[2])
+    if agree == 3 and progressive:
+        return PATTERN_STRONG
+    if against >= 2:
+        return PATTERN_REVERSAL
+    if agree >= 2:
+        others = [b for b, d in zip(bodies, dirs) if d == want]
+        odd = [b for b, d in zip(bodies, dirs) if d != want]
+        if not odd or (np.mean(others) > 0 and odd[0] < 0.5 * np.mean(others)):
+            return PATTERN_MODERATE
+    return PATTERN_INDECISION
+
+
 def add_event_features(ev: pd.DataFrame) -> pd.DataFrame:
     """Derive quadrant, continuation flag, opening pattern and beta-filter flag."""
     df = ev.copy()
@@ -162,15 +204,22 @@ def add_event_features(ev: pd.DataFrame) -> pd.DataFrame:
 
     df["pattern"] = df.apply(classify_opening_pattern, axis=1)
     df["pattern_plus"] = df["pattern"].isin([PATTERN_STRONG, PATTERN_MODERATE])
+    df["pattern_nowick"] = df.apply(classify_opening_pattern_nowick, axis=1)
+    df["pattern_plus_nowick"] = df["pattern_nowick"].isin(
+        [PATTERN_STRONG, PATTERN_MODERATE])
 
     # Section 2C: low quality if the stock moves opposite in sign to BOTH
     # the market and its sector on T+1.
     same_spy = np.sign(df["o2c"]) == np.sign(df["spy_o2c"])
     same_sector = np.sign(df["o2c"]) == np.sign(df["sector_o2c"])
-    df["opposite_both"] = (~same_spy) & (~same_sector)
-    df.loc[df["spy_o2c"].isna() | df["sector_o2c"].isna(), "opposite_both"] = pd.NA
-    df["beta_ok"] = df["opposite_both"].apply(
-        lambda x: pd.NA if pd.isna(x) else (not x))
+    opposite = ((~same_spy) & (~same_sector)).astype("boolean")
+    # A missing benchmark means the filter is not evaluable — kept as NA so
+    # those events are excluded from the filter comparison rather than
+    # silently counted as passing it.
+    missing = df["spy_o2c"].isna() | df["sector_o2c"].isna()
+    opposite[missing.to_numpy()] = pd.NA
+    df["opposite_both"] = opposite
+    df["beta_ok"] = (~opposite).astype("boolean")
     return df
 
 
@@ -226,7 +275,13 @@ def summarise_volatility(ev: pd.DataFrame, metrics: list[str],
 # ---------------------------------------------------------------------------
 
 def quadrant_table(ev: pd.DataFrame) -> pd.DataFrame:
+    """
+    Always a full 2x2, even when a subgroup contains only one gap
+    direction (e.g. when stratifying BY gap direction) — reindexed rather
+    than assuming both levels are present.
+    """
     ct = pd.crosstab(ev["gap_up"], ev["intraday_up"])
+    ct = ct.reindex(index=[False, True], columns=[False, True], fill_value=0)
     ct.index = ["GapDown", "GapUp"]
     ct.columns = ["IntraDown", "IntraUp"]
     return ct
@@ -263,35 +318,50 @@ def quadrant_stats(ev: pd.DataFrame, by: list[str] | None = None) -> pd.DataFram
 # Section 3.7 — transaction costs
 # ---------------------------------------------------------------------------
 
-def net_of_costs(ev: pd.DataFrame, spread_multiplier: float = 1.0,
-                 impact_bps: float = 0.0) -> pd.Series:
-    """
-    Round-trip cost = 2 legs x (half-spread + impact), using each event's
-    OWN measured spread. Corwin-Schultz is preferred (it is a high-low
-    estimator, robust on volatile days); Roll is the fallback.
+# Floor on the trailing spread estimate. Roll returns exactly 0 whenever
+# the return autocovariance comes out positive, which is not a real
+# zero-spread market; 1 bp is a conservative-but-plausible floor for the
+# mega-cap names that dominate this universe.
+SPREAD_FLOOR_BPS = 1.0
 
-    spread_multiplier lets the caller run the sensitivity ladder without
-    inventing a different spread series.
+
+def spread_series(ev: pd.DataFrame, source: str = "roll") -> pd.Series:
     """
-    spread = ev["corwin_schultz_bps"].copy()
-    spread = spread.fillna(ev["roll_spread_bps"])
-    spread = spread.clip(lower=0, upper=500)  # guard against estimator blowups
-    half_spread_bps = spread / 2.0
+    Trailing typical half-spread input, in bps of the full spread.
+
+    'roll' (default) uses the trailing 63-day median Roll estimate, which
+    on this data is calibrated realistically (~1.9 bps median for AAPL).
+    'corwin_schultz' uses the trailing CS median, retained ONLY as a
+    deliberately pessimistic upper bound — CS is inflated here by roughly
+    an order of magnitude (~18 bps median for AAPL).
+    """
+    col = {"roll": "roll_spread_bps_med63",
+           "corwin_schultz": "corwin_schultz_bps_med63"}[source]
+    s = ev[col] if col in ev.columns else pd.Series(np.nan, index=ev.index)
+    fallback = ev["roll_spread_bps"] if "roll_spread_bps" in ev.columns else np.nan
+    return s.fillna(fallback).clip(lower=SPREAD_FLOOR_BPS, upper=500)
+
+
+def net_of_costs(ev: pd.DataFrame, spread_multiplier: float = 1.0,
+                 impact_bps: float = 0.0, source: str = "roll") -> pd.Series:
+    """Round-trip cost = 2 legs x (half-spread x multiplier + impact)."""
+    half_spread_bps = spread_series(ev, source) / 2.0
     per_leg = half_spread_bps * spread_multiplier + impact_bps
     return ev["signed_o2c"] - 2.0 * per_leg / 10_000.0
 
 
 def cost_ladder(ev: pd.DataFrame) -> pd.DataFrame:
     scenarios = [
-        ("gross (no costs)", 0.0, 0.0),
-        ("measured spread", 1.0, 0.0),
-        ("measured + 2bps impact", 1.0, 2.0),
-        ("measured + 5bps impact", 1.0, 5.0),
-        ("1.5x spread + 5bps", 1.5, 5.0),
+        ("gross (no costs)", 0.0, 0.0, "roll"),
+        ("trailing Roll spread", 1.0, 0.0, "roll"),
+        ("Roll + 2bps impact", 1.0, 2.0, "roll"),
+        ("Roll + 5bps impact", 1.0, 5.0, "roll"),
+        ("2x Roll + 5bps (stressed)", 2.0, 5.0, "roll"),
+        ("Corwin-Schultz (upper bound)", 1.0, 2.0, "corwin_schultz"),
     ]
     rows = []
-    for name, mult, imp in scenarios:
-        net = net_of_costs(ev, mult, imp)
+    for name, mult, imp, src in scenarios:
+        net = net_of_costs(ev, mult, imp, src)
         boot = clustered_bootstrap(net, ev["date"])
         wins = net > 0
         gains, losses = net[net > 0].sum(), -net[net < 0].sum()
@@ -307,10 +377,11 @@ def cost_ladder(ev: pd.DataFrame) -> pd.DataFrame:
 
 def expectancy_table(ev: pd.DataFrame, by: list[str],
                      spread_multiplier: float = 1.0,
-                     impact_bps: float = 2.0) -> pd.DataFrame:
+                     impact_bps: float = 2.0,
+                     source: str = "roll") -> pd.DataFrame:
     """Win rate / mean net return / profit factor / n, grouped."""
     df = ev.copy()
-    df["net"] = net_of_costs(df, spread_multiplier, impact_bps)
+    df["net"] = net_of_costs(df, spread_multiplier, impact_bps, source)
     rows = []
     for key, g in df.groupby(by):
         g = g.dropna(subset=["net"])
