@@ -1,7 +1,9 @@
 # Lambda Strategy Validation — Phase 0 (Infrastructure)
 
-Status: **infrastructure built and unit-validated on synthetic data. No real
-market data has been run through this yet** — see "Data blocker" below.
+Status: **all four data gaps identified in the original brief are now
+solved and validated against real, known historical values. No universe-
+wide observational analysis has been run yet** — that's Phase 1, waiting
+on scope (see bottom).
 
 ## What this is
 
@@ -14,62 +16,90 @@ as a strategy result. It is the harness the result will run through.
 
 - `stage_classifier.py` — Stage 1-4 classification via 50/150/200-day SMA
   (Minervini Trend Template rules, Weinstein-consistent state machine for
-  Stage 1 vs 3 disambiguation). **Assumption pending Sigma's exact spec** —
-  see docstring for the full rule list; only the constants/two rule
-  functions need to change if Sigma's definition differs.
-- `universe_filters.py` — ADV / ADTV / Price filters (fully implemented,
-  pure functions of OHLCV). Market cap filter is stubbed — needs a
-  point-in-time shares-outstanding source, not derivable from price data.
+  Stage 1 vs 3 disambiguation). **Assumption pending Sigma's exact spec.**
+  Validated on a synthetic price path cycling through all four stages
+  (`tests/test_stage_classifier_synthetic.py`, PASS) and on real AAPL
+  history (2002-2026): 49.0% Markup / 38.4% Topping / 9.3% Basing / 3.3%
+  Decline — sane for a stock in a two-decade uptrend.
+- `universe_filters.py` — ADV / ADTV / Price filters (pure functions of
+  OHLCV, fully implemented) plus a `market_cap_ok` slot that now plugs
+  into `market_cap.py`.
+- `market_cap.py` — point-in-time historical market cap: SEC EDGAR shares
+  outstanding (free, no key) x HF Data Library close price. **Two bugs
+  caught and fixed during validation** — see "Data-quality catches"
+  below. Verified against AAPL's real historical market cap at three
+  dates.
+- `earnings_calendar.py` — historical earnings dates via Nasdaq's free
+  calendar API, filtered to confirmed-actual rows only (never the
+  upcoming-only or `marketCap` fields — see docstring and catches below).
+- `data_ingest.py` — downloads 1-min bars from HF Data Library and
+  aggregates to daily OHLCV. Key read from `ELKASSABGIDATA_KEY` env var
+  only; never commit the key or raw downloaded data to this repo.
 - `cost_model.py` — T+1 round-trip execution cost model (half-spread +
   square-root market impact + commission + slippage buffer), with LOW /
   BASE / HIGH scenarios for the mandatory cost-sensitivity test.
 - `test_battery.py` — IS/OOS split, walk-forward, bootstrap CI, stage-
   stratified returns, year-by-year returns, beta-filter impact comparison.
-  `first_three_5min_pattern()` raises `NotImplementedError` — it needs
-  5-min/1-min T+1 bars that aren't connected yet.
-- `tests/test_stage_classifier_synthetic.py` — builds a synthetic price
-  path that cycles basing -> markup -> topping -> decline by construction
-  and checks the classifier recovers the correct stage. **PASS** as of the
-  last run (see below). This proves the rule logic is internally correct;
-  it says nothing about whether the resulting strategy has edge on real
-  data.
+  `first_three_5min_pattern()` raises `NotImplementedError` until we
+  actually pull 5-min/1-min T+1 bars at scale (mechanism now proven via
+  `data_ingest.py`, just not run for this purpose yet).
 
-Run the synthetic check any time with:
+Run the synthetic classifier check any time with:
 ```
 python3 lambda_strategy_validation/tests/test_stage_classifier_synthetic.py
 ```
 
-## Data blocker (read before running anything on real tickers)
+## Data sources now connected
 
-Both free daily-OHLCV sources tried from this sandboxed session are
-unreachable:
-- `stooq.com` — serves a JavaScript proof-of-work anti-bot challenge
-  instead of data (not a policy block — no denials in the egress proxy
-  log; stooq is fingerprinting the sandbox as bot traffic).
-- Yahoo Finance / `yfinance` — connection reset on every request.
+| Need | Source | Status |
+|---|---|---|
+| Daily OHLCV, 2002-2026 | HF Data Library (`elkassabgidata` MCP, `data_ingest.py`) | Working, verified on AAPL |
+| 5-min/1-min T+1 bars | Same source, native 1-min resolution | Working, not yet run at universe scale |
+| Market cap history | SEC EDGAR + HF close price (`market_cap.py`) | Working, verified on AAPL |
+| Earnings dates | Nasdaq calendar API (`earnings_calendar.py`) | Working, verified on AAPL |
 
-No market-cap/fundamentals source and no 5-min/1-min intraday source has
-been connected at all.
+`macromicro.me`'s earnings calendar (suggested as a source) is **not**
+usable — it's behind a Cloudflare bot-challenge page ("Just a moment...")
+like stooq.com was, not parseable without a real browser solving the
+challenge, which isn't something to route around. Nasdaq's API served the
+same purpose and is free/unauthenticated.
 
-## What Lambda needs from you to move to Phase 1 (real data)
+## Data-quality catches (read before trusting any number downstream)
 
-Pick whichever is easiest on your end:
-1. **Upload files to Google Drive** (already connected in this session) —
-   CSV/Parquet daily OHLCV + earnings dates + (ideally) shares
-   outstanding/market cap history, and later the 5-min T+1 bars from HF
-   Data Library. Lambda can read them directly via the Drive connector.
-2. **Point Lambda at a GitHub repo** if the HF Data Library ships as a
-   client/SDK repo — Lambda can attach it mid-session.
-3. **An API endpoint + key** — if HF Data Library is a hosted API, give
-   Lambda the base URL and how the key should be supplied (env var vs
-   header) and Lambda will write the client.
+Two silent bugs would have corrupted the market-cap filter if not caught
+by validating against AAPL's real historical values:
 
-Also still needed, independent of the data-access mechanism:
-- Sigma's full research design (the brief called it "[to share later]")
-  — specifically section 3's exact test list, and the exact Stage 2/3/4
-  definitions if they differ from the Minervini/Weinstein synthesis coded
-  here.
-- The actual entry/exit rule to test (per your answer, this will emerge
-  from observing the Stage classification on real data first — Phase 1
-  should therefore start as descriptive/observational, not a live
-  strategy backtest).
+1. **Nasdaq calendar API's `marketCap` field is not historical.** Querying
+   `date=2019-01-29` for AAPL returned `marketCap: $4.5T` — that's *today's*
+   market cap, stamped onto every row regardless of the requested date
+   (real AAPL market cap on 2019-01-29 was ~$700B). `market_cap.py`
+   doesn't use this field at all; `eps`/`surprise`/`fiscal_quarter_ending`
+   on already-reported rows ARE genuinely historical (AAPL's 2019-01-29
+   entry: EPS $4.18 vs forecast $4.17, matching Apple's real reported
+   results) and those are what `earnings_calendar.py` uses.
+2. **Split-adjustment mismatch between price and shares outstanding.**
+   HF Data Library's close price is split-adjusted; SEC's raw shares-
+   outstanding count is not (a 10-Q filed before a split reports the real
+   share count from before that split). Naively multiplying them
+   understated AAPL's 2019 market cap by ~4.2x — almost exactly its
+   Aug-2020 4:1 split ratio. Fixed in `market_cap.py` by detecting
+   split-sized jumps in the raw shares series and scaling historical
+   shares forward by the cumulative ratio of later splits. Verified:
+   AAPL market cap now computes to ~$659B (2015-03-16), ~$706B
+   (2019-01-29), ~$3.0T (2023-07-27) — all consistent with real history.
+
+Also carrying forward from the HF Data Library tool's own disclosed
+caveats: **survivorship bias** in its ticker universe pre-2022, and an
+**IEX source break on 2022-03-01** (volumes not comparable across it,
+visible via the `source` column in raw bars: `pitrading` vs `iex`).
+
+## Still open
+
+- **Sigma's full research design** — section 3's exact test list, and
+  confirmation the Stage 2/3/4 definitions here match Sigma's intent.
+- **Phase 1 scope** — which tickers/universe size, date range within
+  2015-2025, and whether to start observational (no defined entry rule
+  yet, per your answer) or wait for a specific rule. You said scope would
+  be shared later.
+- `first_three_5min_pattern()` and the beta-filter test both need real
+  data run through them at scale — mechanically ready, not yet executed.
