@@ -30,11 +30,11 @@ import pandas as pd
 from build_derived import BARS_URL, fetch_with_retry, log  # noqa: E402
 
 BASE = Path("/home/user/lambda_data")
-INTRADAY_DIR = BASE / "intraday90"
+INTRADAY_DIR = BASE / "intraday210"
 EARN_DIR = BASE / "earnings"
 META_PATH = BASE / "ticker_meta.json"
 
-N_MINUTES = 90          # 09:30 -> 11:00, so exits out to 10:45 are testable
+N_MINUTES = 210         # 09:30 -> 13:00, so the ICT midday window is testable
 START, END = "2015-01-01", "2025-12-31"
 
 
@@ -79,7 +79,7 @@ def process(ticker: str, ann_dates: set) -> bool:
         return True
 
     sel = bars[bars["date"].isin(keep)]
-    window = sel.between_time("09:30", "11:00", inclusive="left")
+    window = sel.between_time("09:30", "13:00", inclusive="left")
     if window.empty:
         pd.DataFrame().to_parquet(out_path, index=False)
         return True
