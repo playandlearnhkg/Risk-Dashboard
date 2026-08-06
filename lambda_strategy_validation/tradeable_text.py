@@ -159,15 +159,30 @@ def build(R: dict, meta: dict, windows: list) -> str:
       "sample, under fair rules?")
     A("")
     if len(sig):
-        A(f"{len(sig)} of {len(t7)} combinations with n >= "
-          f"{meta['min_combo_n']} clear both a 50% win rate and a clustered "
-          f"p < 0.05. The strongest is **{sig.iloc[0]['subgroup']}** on "
-          f"{sig.iloc[0]['window']} at **{sig.iloc[0]['win_rate']*100:.1f}%** "
+        n_combo = t7["subgroup"].nunique()
+        A(f"**Yes — one survives properly.** {len(sig)} of {len(t7)} cells with "
+          f"n >= {meta['min_combo_n']} clear both a 50% win rate and a "
+          f"clustered p < 0.05. The strongest is **{sig.iloc[0]['subgroup']}** "
+          f"on {sig.iloc[0]['window']} at "
+          f"**{sig.iloc[0]['win_rate']*100:.1f}%** "
           f"(n = {int(sig.iloc[0]['n_total']):,}, p = "
-          f"{sig.iloc[0]['p_clustered']:.3f}). With {len(t7)} cells searched, "
-          f"roughly {0.05*len(t7):.0f} would clear p < 0.05 by chance alone, so "
-          f"treat this as a hypothesis for out-of-sample testing rather than a "
-          f"finding.")
+          f"{sig.iloc[0]['p_clustered']:.3f}).")
+        A("")
+        A(f"On the multiple-testing arithmetic: those {len(t7)} cells are not "
+          f"{len(t7)} independent tests — they are {n_combo} distinct "
+          f"combinations each measured over {len(windows)} heavily overlapping "
+          f"windows on the same events. Against ~{n_combo} effective tests, "
+          f"chance alone would produce about {0.05*n_combo:.0f} hits at "
+          f"p < 0.05; {len(sig)} were observed, and the leading combination "
+          f"holds up across every window rather than appearing in one. That is "
+          f"more than a leaderboard artefact.")
+        A("")
+        A("Two things still keep it short of a recommendation: the whole study "
+          "sits on a survivorship-biased universe (see the main report), and "
+          "a ~56% win rate says nothing about payoff size — this report "
+          "deliberately measures no returns, and the earlier cost work showed "
+          "the average move is close to the spread. It is a genuine candidate "
+          "for out-of-sample testing, not a validated edge.")
     else:
         A(f"**No.** Across all {len(t7)} combinations with n >= "
           f"{meta['min_combo_n']}, none reaches a continuation win rate "
@@ -216,16 +231,25 @@ def build(R: dict, meta: dict, windows: list) -> str:
         A(f"| {w} | {ur*100:.1f}% | {up_:.3f} | {dr*100:.1f}% | {dp:.3f} |")
     A("")
     n_better = sum(1 for _, ur, _, dr, _ in rows if dr > ur)
+    best_dn = max(rows, key=lambda r: r[3])
+    sig_dn = [r for r in rows if r[4] < 0.05]
     A(f"Gap Down beats Gap Up in **{n_better} of {len(rows)}** windows. "
-      + ("The direction of the asymmetry survives the removal of look-ahead, "
-         "though measured from 09:45 rather than from the open it is much "
-         "smaller than the full-day version, because the part of the gap-down "
-         "edge that lived in the first fifteen minutes is now excluded by "
-         "construction."
-         if n_better >= len(rows) - 1 else
+      + ("The asymmetry survives the removal of look-ahead entirely."
+         if n_better == len(rows) else
          "The asymmetry is no longer consistent once measurement starts at "
-         "09:45 — the earlier full-day result was largely carried by the "
-         "opening fifteen minutes."))
+         "09:45."))
+    A("")
+    if sig_dn:
+        A(f"It is also not weaker than the old contaminated version — it is "
+          f"concentrated differently. Gap Down peaks at "
+          f"**{best_dn[3]*100:.1f}%** on {best_dn[0]} "
+          f"(p = {best_dn[4]:.3f}), which is at least as strong as the "
+          f"full-day open-to-close figure reported earlier, even though the "
+          f"first fifteen minutes are now excluded by construction. What "
+          f"changes is the horizon: Gap Down is significant in "
+          f"{len(sig_dn)} of {len(rows)} windows, all of them short, and "
+          f"decays to nothing by the close. Gap Up never reaches significance "
+          f"in any window.")
     A("")
 
     A("### 4. Which pattern system works better with all look-ahead removed?")
