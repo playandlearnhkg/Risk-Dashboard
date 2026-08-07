@@ -171,8 +171,12 @@ def describe(r: pd.Series, atr_r: pd.Series, dates: pd.Series,
     return rec
 
 
-def main() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+def prepare() -> tuple[pd.DataFrame, dict]:
+    """Build the cohort and the price matrices the stop scan needs.
+
+    Shared by stops.py and stops_tight.py so the two reports cannot drift
+    apart on cohort definition.
+    """
     vol = volume_features()
     log("volume features built")
 
@@ -230,6 +234,18 @@ def main() -> None:
     adverse = np.where(sign[:, None] > 0, lows, highs)
     close_exit = sign * (df[f"close{EXIT_MIN}"].to_numpy(dtype=float) - entry)
     ref15 = sign * (df[f"close{DELAY_MIN}"].to_numpy(dtype=float) - entry)
+
+    return df, {"sign": sign, "entry": entry, "atr": atr, "opens": opens,
+                "highs": highs, "lows": lows, "adverse": adverse,
+                "close_exit": close_exit, "ref15": ref15}
+
+
+def main() -> None:
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    df, P = prepare()
+    sign, entry, atr = P["sign"], P["entry"], P["atr"]
+    opens, highs, lows = P["opens"], P["highs"], P["lows"]
+    adverse, close_exit, ref15 = P["adverse"], P["close_exit"], P["ref15"]
 
     rules = []
     for k in (1.0, 1.5, 2.0):
