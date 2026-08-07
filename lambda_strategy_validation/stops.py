@@ -65,7 +65,7 @@ MAX_MIN = 65          # minutes 0..64; 64 is the 10:35 exit
 EXIT_MIN = 64
 DELAY_MIN = 19        # the 15-minute reference price (09:50)
 
-FIELDS = ("open", "high", "low", "close")
+FIELDS = ("open", "high", "low", "close", "volume")
 
 
 def load_paths(ev: pd.DataFrame) -> pd.DataFrame:
