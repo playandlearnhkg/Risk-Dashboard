@@ -142,8 +142,12 @@ def weighted(w, r_bps, r_atr, cost_atr, label) -> dict:
     return rec
 
 
-def main() -> None:
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+def build_cohort():
+    """Core cohort plus the corrected universe screen.
+
+    Shared with distshift.py so the two studies cannot drift apart on
+    cohort or screen definition.
+    """
     vol = volume_features()
     log("volume features built")
 
@@ -234,6 +238,24 @@ def main() -> None:
     gap_atr = np.abs(df["open"].to_numpy(float) - prev_close) / atr
     vr = df["vol_ratio"].to_numpy(float)
     dates = df["date"]
+
+    return dict(df=df, sign=sign, entry=entry, atr=atr, closes=closes,
+                opens=opens, highs=highs, lows=lows, adverse=adverse,
+                close_exit=close_exit, r_bps=r_bps, r_atr=r_atr,
+                cost_atr=cost_atr, yr=yr, scr=scr, scr_old=scr_old,
+                gap_atr=gap_atr, vr=vr, dates=dates, cov=cov,
+                target=target)
+
+
+def main() -> None:
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    C = build_cohort()
+    df, sign, entry, atr = C['df'], C['sign'], C['entry'], C['atr']
+    closes, opens, adverse = C['closes'], C['opens'], C['adverse']
+    close_exit, r_bps, r_atr = C['close_exit'], C['r_bps'], C['r_atr']
+    cost_atr, yr, scr = C['cost_atr'], C['yr'], C['scr']
+    gap_atr, vr, dates = C['gap_atr'], C['vr'], C['dates']
+    cov, target = C['cov'], C['target']
 
     R: dict[str, pd.DataFrame] = {}
 
