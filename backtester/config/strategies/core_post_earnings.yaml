@@ -1,0 +1,55 @@
+# Core Post-Earnings Continuation
+#
+# Times under `signal` are EXCHANGE LOCAL (America/New_York) wall-clock,
+# never UTC. The engine resolves them per session, so they stay correct
+# across daylight-saving transitions.
+
+strategy:
+  name: "Core_PostEarnings_Continuation"
+  version: "1.0"
+
+universe:
+  post_earnings_only: true
+  min_price: 10.0
+  min_market_cap: 3000000000
+
+signal:
+  volume_ratio_min: 1.5
+  candle: "continuation"          # closes in the gap direction, non-doji
+  doji_max_body_ratio: 0.10       # body/range <= this is a doji, excluded
+  gap_required: true
+  entry_time: "09:35"             # America/New_York
+  entry_price: "open"
+  volume_lookback_sessions: 20    # trailing same-slot mean, shifted
+  atr_period: 14                  # prior-session ATR
+
+exit:
+  type: "time"
+  hold_minutes: 60
+  stop:
+    enabled: false
+    type: "atr"
+    multiple: 1.0
+
+direction: "signed"               # long gap-ups, short gap-downs
+
+sizing:
+  method: "fixed_risk_pct"
+  risk_pct: 0.005
+  max_pct_equity_per_trade: 0.05
+  risk_unit: "atr"
+
+portfolio:
+  max_concurrent_positions: 5
+  starting_capital: 1000000
+  max_gross_exposure: 1.0         # 1.0 == no leverage
+
+costs:
+  round_trip_bps: 6.6
+
+data:
+  dir: "data"
+  bar_size: "1m"
+  start: null
+  end: null
+  validate: true

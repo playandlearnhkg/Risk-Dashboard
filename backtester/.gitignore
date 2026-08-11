@@ -1,0 +1,7 @@
+results/*
+!results/.gitkeep
+tests/_tmp/
+__pycache__/
+*.pyc
+data/*.parquet
+data/*.txt
