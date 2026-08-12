@@ -361,6 +361,16 @@ class BacktestConfig:
         if self.costs.round_trip_bps == 0.0:
             out.append("costs.round_trip_bps is 0. Results will be gross of "
                        "all transaction costs.")
+        if self.sizing.method == "fixed_notional":
+            slot = 1.0 / self.portfolio.max_concurrent_positions
+            if slot > self.sizing.max_pct_equity_per_trade:
+                out.append(
+                    f"sizing.method='fixed_notional' wants "
+                    f"{slot:.1%} per slot but max_pct_equity_per_trade caps a "
+                    f"position at {self.sizing.max_pct_equity_per_trade:.1%}, "
+                    f"so the cap binds and gross exposure will only reach "
+                    f"{self.portfolio.max_concurrent_positions * self.sizing.max_pct_equity_per_trade:.0%}, "
+                    f"not 100%.")
         if self.portfolio.max_gross_exposure > 1.0:
             out.append(f"portfolio.max_gross_exposure="
                        f"{self.portfolio.max_gross_exposure:.2f} permits "

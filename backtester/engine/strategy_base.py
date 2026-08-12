@@ -148,3 +148,19 @@ class StrategyBase(ABC):
         if df.empty:
             return pd.DataFrame(columns=cols)
         return df.sort_values(["session", "ticker"]).reset_index(drop=True)
+
+    def run_many_signals(self, frames: dict[str, pd.DataFrame],
+                         eligible: dict[str, set] | None = None) -> list[Signal]:
+        """Same walk as `run_many`, but returns Signal objects.
+
+        The Portfolio needs the objects rather than the flattened table,
+        because sizing and execution read fields the table would have to
+        round-trip through strings.
+        """
+        out: list[Signal] = []
+        for ticker, bars in frames.items():
+            sess = None if eligible is None else sorted(eligible.get(ticker, ()))
+            if sess is not None and not sess:
+                continue
+            out.extend(self.run(bars, ticker, sessions=sess))
+        return out

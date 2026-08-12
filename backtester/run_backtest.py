@@ -31,6 +31,7 @@ from engine.calendar import local_time_to_utc, to_exchange_tz  # noqa: E402
 from engine.config import BacktestConfig, ConfigError  # noqa: E402
 from engine.data_loader import DataError, DataLoader  # noqa: E402
 from engine.pit import LookAheadError, verify_no_lookahead  # noqa: E402
+from engine.portfolio import Portfolio, SelectionRule  # noqa: E402
 from strategies.core_post_earnings import \
     CorePostEarningsContinuation  # noqa: E402
 
@@ -98,6 +99,13 @@ def main() -> int:
     ap.add_argument("--verify", action="store_true",
                     help="prove no look-ahead by deleting the future and "
                          "re-running each probed decision")
+    ap.add_argument("--run", action="store_true",
+                    help="simulate the portfolio (step 4) and write the trade "
+                         "log and equity curve to results/")
+    ap.add_argument("--selection", default=SelectionRule.VOLUME_RATIO.value,
+                    choices=[r.value for r in SelectionRule],
+                    help="ex-ante rule for choosing which signals to take "
+                         "when a session exceeds max_concurrent_positions")
     a = ap.parse_args()
 
     try:
@@ -140,7 +148,7 @@ def main() -> int:
             print(f"\nDATA ERROR  {exc}", file=sys.stderr)
             return 2
 
-    if a.signals or a.verify:
+    if a.signals or a.verify or a.run:
         strat = CorePostEarningsContinuation(cfg)
         frames = loader.load_many(loader.tickers, start=cfg.data.start,
                                   end=cfg.data.end)
@@ -174,9 +182,32 @@ def main() -> int:
             else:
                 print("none -- every session was filtered out")
 
+        if a.run:
+            sigs = strat.run_many_signals(frames)
+            pf = Portfolio(cfg, SelectionRule(a.selection))
+            log, curve = pf.run(sigs, frames)
+            rule(f"portfolio: {len(log)} trades, selection={a.selection}")
+            if len(log):
+                cols = ["trade_id", "ticker", "session", "direction",
+                        "entry_price", "exit_price", "exit_reason", "notional",
+                        "weight", "net_pnl", "ret_bps", "mae_atr", "mfe_atr"]
+                print(log[cols].round(4).to_string(index=False))
+                print(f"\nstarting capital  {cfg.portfolio.starting_capital:>14,.2f}")
+                print(f"final equity      {curve.iloc[-1]:>14,.2f}")
+                print(f"net P&L           {log['net_pnl'].sum():>14,.2f}")
+                print(f"costs paid        {log['cost'].sum():>14,.2f}")
+                print(f"stopped           {int((log.exit_reason == 'stop').sum())} "
+                      f"of {len(log)}")
+                print(f"gross-capped days {int(log['scaled'].sum())} trades")
+                log.to_csv(ROOT / "results" / "trades.csv", index=False)
+                curve.to_csv(ROOT / "results" / "equity.csv")
+                print(f"\nwrote {ROOT / 'results' / 'trades.csv'}"
+                      f"\nwrote {ROOT / 'results' / 'equity.csv'}")
+
     rule("status")
-    print("Steps 1-3 complete: DataLoader, Config, point-in-time guards and "
-          "StrategyBase.\nSteps 4-6 (Portfolio, Metrics, full run) are stubs.")
+    print("Steps 1-4 complete: DataLoader, Config, point-in-time guards, "
+          "StrategyBase and Portfolio.\nSteps 5-6 (Metrics, reporting) are "
+          "stubs.")
     return 0
 
 
