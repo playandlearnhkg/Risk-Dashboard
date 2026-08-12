@@ -3,3 +3,11 @@ pandas>=2.0
 pyarrow>=12.0
 numpy>=1.24
 PyYAML>=6.0
+
+# REQUIRED ON WINDOWS. Python's zoneinfo reads the operating system's
+# timezone database, and Windows does not ship one. Without this,
+# ZoneInfo("America/New_York") raises ZoneInfoNotFoundError and the
+# whole engine fails at import -- every session boundary in this project
+# is defined in exchange-local time. macOS and Linux have a system tz
+# database, so the marker keeps it off those platforms.
+tzdata>=2024.1; platform_system == "Windows"
