@@ -32,6 +32,13 @@ from engine.data_loader import (DataCatalog, DataError,  # noqa: E402
 DATA = ROOT / "data"
 CFG = ROOT / "config" / "strategies" / "core_post_earnings.yaml"
 
+
+def aapl_file() -> Path:
+    """Discover the fixture rather than hard-coding its date range."""
+    hits = sorted(DATA.glob("AAPL_*_1m.parquet"))
+    assert hits, "run tests/make_fixtures.py first"
+    return hits[0]
+
 _results: list[tuple[str, bool, str]] = []
 
 
@@ -233,7 +240,7 @@ def _write_tmp(df: pd.DataFrame, name: str) -> Path:
 
 
 def t_rejects_naive_index():
-    df = pd.read_parquet(DATA / "AAPL_20251015_20251215_1m.parquet").head(500)
+    df = pd.read_parquet(aapl_file()).head(500)
     df.index = df.index.tz_localize(None)
     df.index.name = "ts"
     _write_tmp(df, "NAIVE_20251015_20251215_1m.parquet")
@@ -243,7 +250,7 @@ def t_rejects_naive_index():
 
 
 def t_rejects_bad_ohlc():
-    df = pd.read_parquet(DATA / "AAPL_20251015_20251215_1m.parquet").head(500).copy()
+    df = pd.read_parquet(aapl_file()).head(500).copy()
     df.iloc[10, df.columns.get_loc("high")] = df.iloc[10]["low"] - 1.0
     _write_tmp(df, "BADOHLC_20251015_20251215_1m.parquet")
     expect_raises(DataError,
@@ -253,7 +260,7 @@ def t_rejects_bad_ohlc():
 
 def t_rejects_duplicate_timestamps_within_file():
     """A file duplicated against ITSELF cannot be resolved by recency."""
-    df = pd.read_parquet(DATA / "AAPL_20251015_20251215_1m.parquet").head(500)
+    df = pd.read_parquet(aapl_file()).head(500)
     doubled = pd.concat([df, df.iloc[:5]]).sort_index()
     _write_tmp(doubled, "DUPE_20251015_20251215_1m.parquet")
     # De-dup runs before validation, so this must come back clean and

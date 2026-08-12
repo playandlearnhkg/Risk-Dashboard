@@ -1,18 +1,19 @@
 """
 run_backtest.py -- entry point.
 
-Steps 1-2 are complete, so today this command validates a configuration,
-audits the data directory against it, and prints exactly what a run
-would consume. That is deliberately useful on its own: most wasted
-backtests are wasted because the data or the config was not what the
-author assumed, and this surfaces both before any modelling happens.
+This is the single entry point for every stage. Today it validates a
+configuration, audits the data directory against it, generates signals,
+and proves the signals carry no look-ahead. Portfolio simulation and
+metrics (steps 4-6) will hang off the same command.
 
-Signal generation, portfolio simulation and metrics arrive in steps 3-6
-and will hang off the same entry point.
+Config and data inspection are deliberately useful on their own: most
+wasted backtests are wasted because the data or the config was not what
+the author assumed, and both surface here before any modelling happens.
 
     python3 run_backtest.py --config config/strategies/core_post_earnings.yaml
     python3 run_backtest.py --config ... --audit
     python3 run_backtest.py --config ... --peek AAPL
+    python3 run_backtest.py --config ... --signals --verify
 """
 
 from __future__ import annotations
@@ -29,6 +30,9 @@ sys.path.insert(0, str(ROOT))
 from engine.calendar import local_time_to_utc, to_exchange_tz  # noqa: E402
 from engine.config import BacktestConfig, ConfigError  # noqa: E402
 from engine.data_loader import DataError, DataLoader  # noqa: E402
+from engine.pit import LookAheadError, verify_no_lookahead  # noqa: E402
+from strategies.core_post_earnings import \
+    CorePostEarningsContinuation  # noqa: E402
 
 
 def rule(title: str) -> None:
@@ -89,6 +93,11 @@ def main() -> int:
                     help="compare filename ranges against file contents")
     ap.add_argument("--peek", metavar="TICKER",
                     help="resolve the configured entry time on real sessions")
+    ap.add_argument("--signals", action="store_true",
+                    help="generate signals (step 3) and write them to results/")
+    ap.add_argument("--verify", action="store_true",
+                    help="prove no look-ahead by deleting the future and "
+                         "re-running each probed decision")
     a = ap.parse_args()
 
     try:
@@ -131,10 +140,43 @@ def main() -> int:
             print(f"\nDATA ERROR  {exc}", file=sys.stderr)
             return 2
 
+    if a.signals or a.verify:
+        strat = CorePostEarningsContinuation(cfg)
+        frames = loader.load_many(loader.tickers, start=cfg.data.start,
+                                  end=cfg.data.end)
+
+        if a.verify:
+            rule("look-ahead verification (future deleted, decisions re-run)")
+            for t, bars in frames.items():
+                try:
+                    out = verify_no_lookahead(
+                        lambda b, _c=cfg: CorePostEarningsContinuation(_c),
+                        bars, t)
+                except LookAheadError as exc:
+                    print(f"FAILED  {t}: {exc}", file=sys.stderr)
+                    return 3
+                print(f"  {t}: {len(out)} decisions re-run, all identical")
+
+        if a.signals:
+            sigs = strat.run_many(frames)
+            rule(f"signals: {len(sigs)}")
+            if len(sigs):
+                show = sigs.copy()
+                show["entry_local"] = to_exchange_tz(
+                    pd.DatetimeIndex(show["entry_ts"])).strftime("%H:%M %Z")
+                cols = ["ticker", "session", "direction", "entry_local",
+                        "entry_price", "risk_unit", "gap_pct", "volume_ratio",
+                        "body_over_range"]
+                print(show[cols].round(4).to_string(index=False))
+                out_path = ROOT / "results" / "signals.csv"
+                sigs.to_csv(out_path, index=False)
+                print(f"\nwrote {out_path}")
+            else:
+                print("none -- every session was filtered out")
+
     rule("status")
-    print("Steps 1-2 complete: DataLoader and Config are implemented and "
-          "tested.\nSteps 3-6 (StrategyBase, Portfolio, Metrics, full run) "
-          "are stubs.")
+    print("Steps 1-3 complete: DataLoader, Config, point-in-time guards and "
+          "StrategyBase.\nSteps 4-6 (Portfolio, Metrics, full run) are stubs.")
     return 0
 
 

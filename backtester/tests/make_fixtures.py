@@ -30,7 +30,8 @@ import pandas as pd
 NY = ZoneInfo("America/New_York")
 OUT = Path(__file__).resolve().parents[1] / "data"
 
-HOLIDAYS = {dt.date(2025, 11, 27), dt.date(2025, 12, 25)}
+HOLIDAYS = {dt.date(2025, 9, 1), dt.date(2025, 11, 27),
+            dt.date(2025, 12, 25)}
 EARLY_CLOSE = {dt.date(2025, 11, 28): dt.time(13, 0)}
 
 
@@ -53,6 +54,12 @@ def build(ticker: str, start: dt.date, end: dt.date, seed: int,
         stop = dt.datetime.combine(day, close_t, tzinfo=NY)
         # A gap up or down at the open, so continuation logic has input.
         px *= 1.0 + rng.normal(0, 0.012)
+        # On a third of sessions the opening minutes trade heavy, so the
+        # 1.5x volume filter has something to select. Without this the
+        # synthetic volume is near-constant, the ratio sits at ~1.0, and
+        # the strategy correctly produces no signals -- which would make
+        # the end-to-end test vacuous rather than passing.
+        surge = float(rng.uniform(2.0, 8.0)) if rng.random() < 0.34 else 1.0
         while t < stop:
             # Thin outside the regular session, as in real data.
             local = t.timetz()
@@ -64,6 +71,9 @@ def build(ticker: str, start: dt.date, end: dt.date, seed: int,
             lo = min(o, c) * (1 - abs(rng.normal(0, 0.0004)))
             vol = float(rng.integers(2_000, 40_000) if regular
                         else rng.integers(0, 1_500))
+            mins_in = (t.hour * 60 + t.minute) - (9 * 60 + 30)
+            if regular and 0 <= mins_in < 5:
+                vol *= surge
             rows.append((t.astimezone(dt.timezone.utc), o, hi, lo, c, vol))
             px = c
             t += dt.timedelta(minutes=1)
@@ -85,9 +95,9 @@ def build(ticker: str, start: dt.date, end: dt.date, seed: int,
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
 
-    a = build("AAPL", dt.date(2025, 10, 15), dt.date(2025, 12, 15),
+    a = build("AAPL", dt.date(2025, 8, 1), dt.date(2025, 12, 15),
               seed=7, px0=220.0, drop_bars=True)
-    a.to_parquet(OUT / "AAPL_20251015_20251215_1m.parquet")
+    a.to_parquet(OUT / "AAPL_20250801_20251215_1m.parquet")
 
     # Two overlapping extracts for MSFT. The later-issued one is shifted
     # by a visible amount inside the overlap so the tests can prove which
