@@ -110,6 +110,24 @@ def main() -> None:
     b1.to_parquet(OUT / "MSFT_20251015_20251120_1m.parquet")
     b2.to_parquet(OUT / "MSFT_20251110_20251215_1m.parquet")
 
+    # An earnings calendar for the fixtures, deliberately mixing all
+    # three timing values so the provider's BMO / AMC / unknown paths are
+    # all exercised by the example rather than only the happy one.
+    cal = pd.DataFrame([
+        {"ticker": "AAPL", "announce_date": "2025-08-14", "announce_time": "amc"},
+        {"ticker": "AAPL", "announce_date": "2025-10-05", "announce_time": "amc"},
+        {"ticker": "AAPL", "announce_date": "2025-10-15", "announce_time": "bmo"},
+        {"ticker": "AAPL", "announce_date": "2025-11-11", "announce_time": "amc"},
+        {"ticker": "AAPL", "announce_date": "2025-12-04", "announce_time": "amc"},
+        {"ticker": "AAPL", "announce_date": "2025-09-09", "announce_time": ""},
+        # A quiet session with no signal: eligible, but nothing fires.
+        {"ticker": "AAPL", "announce_date": "2025-11-18", "announce_time": "amc"},
+        {"ticker": "MSFT", "announce_date": "2025-11-25", "announce_time": "amc"},
+        {"ticker": "MSFT", "announce_date": "2025-10-30", "announce_time": ""},
+    ])
+    cal.to_csv(OUT / "earnings_calendar.csv", index=False)
+    print(f"{'earnings_calendar.csv':44s} {len(cal):>7,} announcements")
+
     # A file the catalog must ignore rather than choke on.
     (OUT / "README_not_a_bar_file.txt").write_text(
         "Deliberate non-parquet file; the catalog must skip it.\n")

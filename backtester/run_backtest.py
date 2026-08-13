@@ -35,6 +35,8 @@ from engine.portfolio import Portfolio, SelectionRule  # noqa: E402
 from engine import capacity as CAP  # noqa: E402
 from engine import metrics as MET  # noqa: E402
 from engine import robustness as ROB  # noqa: E402
+from engine.universe import (AllSessions, UniverseError,  # noqa: E402
+                             from_config as universe_from_config)
 from strategies.core_post_earnings import \
     CorePostEarningsContinuation  # noqa: E402
 
@@ -116,6 +118,19 @@ def main() -> int:
                          "participation, concentration, execution delay")
     ap.add_argument("--all", action="store_true",
                     help="--run --validate --robustness --capacity")
+    ap.add_argument("--earnings", type=Path, default=None,
+                    help="earnings calendar (CSV/Parquet: ticker, "
+                         "announce_date, announce_time). Required when "
+                         "universe.post_earnings_only is true.")
+    ap.add_argument("--market-caps", type=Path, default=None,
+                    help="point-in-time market caps (ticker, date, market_cap)")
+    ap.add_argument("--unknown-timing", default="skip",
+                    choices=["skip", "assume_amc", "assume_bmo"],
+                    help="what to do with announcements of unknown timing; "
+                         "skip is the only one that assumes nothing")
+    ap.add_argument("--no-universe", action="store_true",
+                    help="evaluate every session, ignoring universe filters "
+                         "(diagnostic only -- this is NOT the strategy)")
     ap.add_argument("--start", default=None, help="restrict to YYYY-MM-DD")
     ap.add_argument("--end", default=None, help="restrict to YYYY-MM-DD")
     ap.add_argument("--cost-bps", type=float, default=None,
@@ -179,6 +194,29 @@ def main() -> int:
         frames = loader.load_many(loader.tickers, start=cfg.data.start,
                                   end=cfg.data.end)
 
+        # ---- universe: which (ticker, session) pairs may be evaluated
+        caps = None
+        if a.market_caps is not None:
+            caps = pd.read_csv(a.market_caps) if a.market_caps.suffix == ".csv" \
+                else pd.read_parquet(a.market_caps)
+        try:
+            provider = (AllSessions() if a.no_universe
+                        else universe_from_config(cfg, a.earnings, caps,
+                                                  a.unknown_timing))
+            eligible = provider.eligible(frames, start=a.start, end=a.end)
+        except UniverseError as exc:
+            print(f"\nUNIVERSE ERROR  {exc}", file=sys.stderr)
+            return 2
+
+        rule("universe")
+        for k, v in provider.diagnostics().items():
+            print(f"  {k:<28} {v}")
+        if a.no_universe:
+            print("\n  WARNING: --no-universe evaluates every session. Any "
+                  "\n  performance number from this run describes a different "
+                  "\n  strategy from the configured one.")
+
+
         if a.verify:
             rule("look-ahead verification (future deleted, decisions re-run)")
             for t, bars in frames.items():
@@ -192,7 +230,7 @@ def main() -> int:
                 print(f"  {t}: {len(out)} decisions re-run, all identical")
 
         if a.signals:
-            sigs = strat.run_many(frames)
+            sigs = strat.run_many(frames, eligible=eligible)
             rule(f"signals: {len(sigs)}")
             if len(sigs):
                 show = sigs.copy()
@@ -208,7 +246,7 @@ def main() -> int:
             else:
                 print("none -- every session was filtered out")
 
-        sigs_obj = strat.run_many_signals(frames)
+        sigs_obj = strat.run_many_signals(frames, eligible=eligible)
 
         if a.run:
             sigs = sigs_obj

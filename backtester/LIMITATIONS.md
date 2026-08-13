@@ -1,32 +1,31 @@
 # Known limitations and TODOs
 
-Status after step 4. Ordered by how badly each one would mislead you if
+Status after step 7. Ordered by how badly each one would mislead you if
 you forgot about it, not by how hard it is to fix.
 
-## 1. BLOCKING — the universe filters are parsed but never applied
+## 1. Universe filters are ENFORCED (resolved)
 
-`universe.post_earnings_only`, `min_price` and `min_market_cap` are
-validated and carried on the config object, and **nothing reads them.**
+`universe.post_earnings_only`, `min_price` and `min_market_cap` are now
+applied by `engine/universe.py` and wired through
+`StrategyBase.run_many(frames, eligible=...)`. A config that sets
+`post_earnings_only: true` without an earnings calendar RAISES rather
+than silently falling back to every session, and `min_market_cap`
+without a point-in-time market-cap series raises for the same reason.
 
-That means the strategy currently evaluates **every session of every
-ticker**, not post-earnings T+1 sessions. On the synthetic fixtures this
-is invisible because they contain no earnings information at all. On
-real data it silently changes the strategy into something else: a
-volume-and-continuation filter applied to all days, which is not what
-any of the research measured.
+Two things about that enforcement still need a human:
 
-This is deliberate rather than forgotten. Every one of those filters
-needs a point-in-time reference source — an earnings calendar with
-announcement timestamps, a market-cap series as-of each date — and
-answering them from the price file would reintroduce survivorship and
-restatement bias through the back door.
-
-The hook already exists: `StrategyBase.run_many(frames, eligible=...)`
-takes a `{ticker: {session, ...}}` mapping. Wiring a universe provider
-into it is the next real piece of work.
-
-**Until that is wired, treat signal counts from real data as an upper
-bound, not a cohort.**
+- **Announcement timing is data, not inference.** BMO on day D reacts on
+  D; AMC on D reacts on the next traded session. Rows with unknown
+  timing are SKIPPED by default and counted in the diagnostics. The
+  `assume_amc` / `assume_bmo` policies exist because many vendors ship
+  `time-not-supplied`, but they are assumptions and the diagnostics
+  label them as such. If most of your calendar is unknown, the default
+  will produce very few signals -- that is the guard, not a fault.
+- **Survivorship still enters upstream.** The provider can only filter
+  the tickers it is handed. A file list drawn from today's index
+  membership is already biased before it arrives, and nothing here can
+  undo it. `diagnostics()` reports the ticker count so the gap is
+  visible; the fix belongs in how the data was collected.
 
 ## 2. Ratios against a non-positive base are suppressed, not computed
 
