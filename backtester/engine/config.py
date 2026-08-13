@@ -45,6 +45,7 @@ DIRECTIONS = {"signed", "long_only", "short_only"}
 SIZING_METHODS = {"fixed_risk_pct", "fixed_notional"}
 EXIT_TYPES = {"time"}
 STOP_TYPES = {"atr"}
+# Only "open" is implementable. See _check_coherence for why.
 ENTRY_PRICES = {"open", "close"}
 RISK_UNITS = {"atr"}
 
@@ -332,6 +333,13 @@ class BacktestConfig:
 
     def _check_coherence(self) -> None:
         """Cross-section checks that no single parser can see."""
+        if self.signal.entry_price == "close":
+            raise ConfigError(
+                "signal.entry_price='close' is not implementable under "
+                "point-in-time rules. The ENTRY bar's close does not exist at "
+                "the decision instant, and the SIGNAL candle's close is a "
+                "print that has already happened -- you cannot trade at it. "
+                "Use 'open', which is the next print after the decision.")
         if self.signal.candle == "continuation" and not self.signal.gap_required:
             raise ConfigError(
                 "signal: candle='continuation' is defined relative to the gap "

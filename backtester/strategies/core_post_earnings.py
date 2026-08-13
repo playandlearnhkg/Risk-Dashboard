@@ -91,7 +91,9 @@ class CorePostEarningsContinuation(StrategyBase):
         if cfg.direction == "short_only" and direction > 0:
             return None
 
-        price = view.entry_open if sig.entry_price == "open" else view.entry_open
+        # Config guarantees entry_price == "open"; the entry bar's close
+        # does not exist yet and its own open is the only tradeable print.
+        price = view.entry_open
         if not _finite(price) or price <= 0:
             return None                      # no bar printed at the entry minute
 
