@@ -8,7 +8,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 SUITES = ["test_loader_config.py", "test_pit_strategy.py",
-          "test_portfolio.py"]
+          "test_portfolio.py", "test_metrics_suites.py"]
 
 
 def main() -> int:

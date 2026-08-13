@@ -355,6 +355,48 @@ class BacktestConfig:
             raise ConfigError("portfolio.max_concurrent_positions must be >= 1 "
                               "for fixed_notional sizing")
 
+    def replace(self, **dotted: Any) -> BacktestConfig:
+        """Return a copy with dotted-path overrides applied.
+
+        `cfg.replace(**{"exit.stop.enabled": True, "costs.round_trip_bps": 15})`
+
+        Frozen dataclasses cannot be mutated, which is deliberate -- a run
+        whose configuration changed underneath it is not reproducible. The
+        robustness and capacity suites need dozens of variants, so this
+        builds NEW frozen objects rather than relaxing that guarantee.
+        Every override goes back through the coherence checks, so a
+        variant cannot reach a state the YAML loader would have refused.
+        """
+        import copy
+        d = copy.copy(self.__dict__)
+        for path, val in dotted.items():
+            parts = path.split(".")
+            if len(parts) == 1:
+                d[parts[0]] = val
+                continue
+            if parts[0] not in d:
+                raise ConfigError(f"replace: no section {parts[0]!r}")
+            section = d[parts[0]]
+            sub = copy.copy(section.__dict__)
+            if len(parts) == 2:
+                if parts[1] not in sub:
+                    raise ConfigError(f"replace: {path!r} is not a field")
+                sub[parts[1]] = val
+                d[parts[0]] = type(section)(**sub)
+            elif len(parts) == 3:
+                inner_obj = sub[parts[1]]
+                inner = copy.copy(inner_obj.__dict__)
+                if parts[2] not in inner:
+                    raise ConfigError(f"replace: {path!r} is not a field")
+                inner[parts[2]] = val
+                sub[parts[1]] = type(inner_obj)(**inner)
+                d[parts[0]] = type(section)(**sub)
+            else:
+                raise ConfigError(f"replace: path {path!r} is too deep")
+        out = BacktestConfig(**d)
+        out._check_coherence()
+        return out
+
     def warnings(self) -> list[str]:
         """Legal but easily-misread combinations, for the runner to print."""
         out: list[str] = []

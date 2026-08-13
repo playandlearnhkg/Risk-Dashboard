@@ -28,14 +28,25 @@ into it is the next real piece of work.
 **Until that is wired, treat signal counts from real data as an upper
 bound, not a cohort.**
 
-## 2. Metrics are a stub (step 5)
+## 2. Ratios against a non-positive base are suppressed, not computed
 
-`engine/metrics.py` is seven lines of docstring. The trade log and equity
-curve exist and are correct; nothing yet computes CAGR, drawdown,
-Sharpe, Calmar, profit factor, payoff ratio, winsorised skew/kurtosis or
-the year-by-year table from them.
+`capacity._kept` returns NaN when the baseline P&L is zero or negative.
+A "% of P&L kept" ratio inverts against a loss -- a loss deepening from
+-881 to -1081 computes as 1.23, which reads as *kept 123%*. Every
+friction in that module can only subtract, so a ratio above 1.0 always
+means the denominator is wrong. On a losing sub-period you will see
+blanks and an absolute `pnl_change` instead; that is intended.
 
-## 3. Costs are a flat round-trip figure
+## 3. `metrics.reprice` is exact per trade, approximate on the curve
+
+Cost changes neither which trades fire nor when they exit, so per-trade
+statistics re-cost exactly. It does change equity, and fixed-fractional
+sizing reads equity, so the true path would size later trades
+differently. The robustness suite therefore re-runs the Portfolio at
+each cost rather than re-pricing; `reprice` exists for fast sweeps and
+says so itself.
+
+## 4. Costs are a flat round-trip figure
 
 `costs.round_trip_bps` is charged once on entry notional and does not
 vary by name, price, volatility or time of day. Real spreads at 09:35 in
@@ -52,7 +63,7 @@ Not modelled at all:
 - partial fills
 - any capacity limit against the name's actual volume in that hour
 
-## 4. Execution simplifications
+## 5. Execution simplifications
 
 - **Bar labelling is assumed LEFT-labelled**: the bar stamped 09:35
   covers 09:35:00–09:36:00. If your vendor stamps the right edge, the
@@ -68,7 +79,7 @@ Not modelled at all:
   printed. They are kept with the last available close. Filter on this
   column before reporting if it is material in your data.
 
-## 5. Scope limits enforced by config
+## 6. Scope limits enforced by config
 
 - `exit.type` supports only `time`. No trailing stops, targets, or
   signal-based exits.
@@ -82,7 +93,7 @@ Not modelled at all:
   instant, and the signal candle's close is a print that already
   happened and cannot be traded at.
 
-## 6. Point-in-time guard — the one hole that is left
+## 7. Point-in-time guard — the one hole that is left
 
 `verify_no_lookahead` catches leakage through the engine's inputs, and
 when passed a **factory** it also rebuilds the strategy from truncated
@@ -95,7 +106,7 @@ about. `audit_source` and code review cover that case.
 `tests/test_pit_strategy.py::t_instance_form_misses_captured_state`
 asserts this limitation deliberately, so it stays visible.
 
-## 7. Smaller things
+## 8. Smaller things
 
 - **Selection under the concurrency cap** uses a fixed RNG seed (7) for
   `SelectionRule.RANDOM`, so a "random" run is one reproducible draw,
@@ -108,7 +119,12 @@ asserts this limitation deliberately, so it stays visible.
   which is convenient and slow at large trade counts.
 - **No logging framework.** Diagnostics print to stdout.
 - **Fixtures are random walks.** They exercise the plumbing; their P&L
-  is meaningless and should never be quoted.
+  is meaningless and should never be quoted. Because they lose money,
+  every capacity ratio comes back blank on them by design -- that is the
+  guard working, not a bug.
+- **Sub-minute delay rows are interpolated.** Bars are one minute, so a
+  60-second delay is exact and 30/90 seconds are linear interpolations
+  between bracketing opens. The `exact` column says which is which.
 
 ## What is NOT a limitation
 

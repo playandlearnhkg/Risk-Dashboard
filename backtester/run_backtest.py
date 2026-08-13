@@ -32,6 +32,9 @@ from engine.config import BacktestConfig, ConfigError  # noqa: E402
 from engine.data_loader import DataError, DataLoader  # noqa: E402
 from engine.pit import LookAheadError, verify_no_lookahead  # noqa: E402
 from engine.portfolio import Portfolio, SelectionRule  # noqa: E402
+from engine import capacity as CAP  # noqa: E402
+from engine import metrics as MET  # noqa: E402
+from engine import robustness as ROB  # noqa: E402
 from strategies.core_post_earnings import \
     CorePostEarningsContinuation  # noqa: E402
 
@@ -102,11 +105,28 @@ def main() -> int:
     ap.add_argument("--run", action="store_true",
                     help="simulate the portfolio (step 4) and write the trade "
                          "log and equity curve to results/")
+    ap.add_argument("--validate", action="store_true",
+                    help="full validation report (step 5): performance, "
+                         "distribution, year-by-year, long/short, trade log")
+    ap.add_argument("--robustness", action="store_true",
+                    help="robustness suite (step 6): cost, period, side, "
+                         "position limit and stop sensitivity")
+    ap.add_argument("--capacity", action="store_true",
+                    help="risk and capacity suite (step 7): borrow, slippage, "
+                         "participation, concentration, execution delay")
+    ap.add_argument("--all", action="store_true",
+                    help="--run --validate --robustness --capacity")
+    ap.add_argument("--start", default=None, help="restrict to YYYY-MM-DD")
+    ap.add_argument("--end", default=None, help="restrict to YYYY-MM-DD")
+    ap.add_argument("--cost-bps", type=float, default=None,
+                    help="override costs.round_trip_bps for this run")
     ap.add_argument("--selection", default=SelectionRule.VOLUME_RATIO.value,
                     choices=[r.value for r in SelectionRule],
                     help="ex-ante rule for choosing which signals to take "
                          "when a session exceeds max_concurrent_positions")
     a = ap.parse_args()
+    if a.all:
+        a.run = a.validate = a.robustness = a.capacity = True
 
     try:
         cfg = BacktestConfig.from_yaml(a.config)
@@ -116,6 +136,10 @@ def main() -> int:
 
     rule(f"{cfg.strategy.name} v{cfg.strategy.version}")
     print(cfg.describe())
+
+    if a.cost_bps is not None:
+        cfg = cfg.replace(**{"costs.round_trip_bps": float(a.cost_bps)})
+        print(f"\noverride: costs.round_trip_bps = {a.cost_bps}")
 
     for w in cfg.warnings():
         print(f"\nNOTE  {w}")
@@ -148,7 +172,9 @@ def main() -> int:
             print(f"\nDATA ERROR  {exc}", file=sys.stderr)
             return 2
 
-    if a.signals or a.verify or a.run:
+    need_engine = (a.signals or a.verify or a.run or a.validate
+                   or a.robustness or a.capacity)
+    if need_engine:
         strat = CorePostEarningsContinuation(cfg)
         frames = loader.load_many(loader.tickers, start=cfg.data.start,
                                   end=cfg.data.end)
@@ -182,8 +208,10 @@ def main() -> int:
             else:
                 print("none -- every session was filtered out")
 
+        sigs_obj = strat.run_many_signals(frames)
+
         if a.run:
-            sigs = strat.run_many_signals(frames)
+            sigs = sigs_obj
             pf = Portfolio(cfg, SelectionRule(a.selection))
             log, curve = pf.run(sigs, frames)
             rule(f"portfolio: {len(log)} trades, selection={a.selection}")
@@ -204,10 +232,39 @@ def main() -> int:
                 print(f"\nwrote {ROOT / 'results' / 'trades.csv'}"
                       f"\nwrote {ROOT / 'results' / 'equity.csv'}")
 
+        results = ROOT / "results"
+
+        if a.validate:
+            log, curve = Portfolio(cfg, SelectionRule(a.selection)).run(
+                sigs_obj, frames)
+            m = MET.evaluate(log, cfg.portfolio.starting_capital,
+                             f"{cfg.strategy.name} v{cfg.strategy.version}",
+                             equity=curve, start=a.start, end=a.end)
+            print()
+            print(m.summary())
+            written = m.write(results, prefix="validation_")
+            print(f"\nwrote {len(written)} files to {results}")
+
+        if a.robustness:
+            tables = ROB.run_suite(cfg, sigs_obj, frames)
+            text = ROB.dashboard(tables, cfg)
+            print("\n" + text)
+            ROB.write(tables, results, text)
+            print(f"\nwrote robustness_*.csv and robustness_dashboard.txt "
+                  f"to {results}")
+
+        if a.capacity:
+            tables = CAP.run_suite(cfg, sigs_obj, frames)
+            hc = CAP.haircut(tables, cfg)
+            text = CAP.dashboard(tables, cfg, hc)
+            print("\n" + text)
+            CAP.write(tables, results, text, hc)
+            print(f"\nwrote capacity_*.csv and capacity_dashboard.txt "
+                  f"to {results}")
+
     rule("status")
-    print("Steps 1-4 complete: DataLoader, Config, point-in-time guards, "
-          "StrategyBase and Portfolio.\nSteps 5-6 (Metrics, reporting) are "
-          "stubs.")
+    print("Steps 1-7 complete: DataLoader, Config, point-in-time guards, "
+          "StrategyBase, Portfolio, Metrics, Robustness and Capacity.")
     return 0
 
 
