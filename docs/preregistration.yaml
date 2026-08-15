@@ -51,6 +51,34 @@ data:
     - FXE      # EUR/USD  (substitute 6E futures if FXE liquidity is too thin)
   base_timeframe: 5min        # FROZEN
   secondary_timeframe: 1min   # FROZEN (used only in execution step 11)
+
+  # Source decided 2026-08-15, before any result was computed.
+  source: hfdatalibrary.com   # 1-min OHLCV, resampled by stage1.hf_prepare
+  era_restriction: pre_iex_break
+  era_end: 2022-02-28
+  # The vendor discloses an IEX source break on 2022-03-01. Stage 1 uses no
+  # volume, but IEX-only bars are built from a sparse subset of the tape, so
+  # their HIGH and LOW are attenuated - which corrupts every geometry ratio
+  # this study measures. That is a change of measurement instrument, not a
+  # volume caveat, so the eras are not pooled. Confirm empirically with
+  # stage1.hf_quality (gap-rate tolerance 0.02) and record its table here.
+  # Cost of the restriction: none. Common history from FXE's Dec-2005 launch
+  # to the break is ~4,050 sessions against the 1,762 Option A requires.
+  known_limitations:
+    - "Pre-2022 only: says nothing about the current microstructure regime."
+    - "Vendor flags a survivor-biased universe pre-2022. Stage 1 names four
+       surviving ETFs rather than screening, so no selection is performed on
+       the data, but results generalise to major liquid ETFs only."
+
+  # Resampling rules, fixed before any result. 1-min -> 5-min.
+  resampling:
+    rth_filter_before_aggregation: true
+    bins_cross_session: forbidden
+    min_minutes_per_bar: 4        # of 5; short bins have attenuated range
+    incomplete_bin_policy: drop_and_leave_nan_hole
+    forward_fill: forbidden
+    max_drop_fraction: 0.02
+    strict_forward_spacing: true  # r_h requires a successor exactly h*5 min later
   # Everything below is STAMPED BY THE VALIDATOR, not declared by hand.
   period:
     start: PENDING

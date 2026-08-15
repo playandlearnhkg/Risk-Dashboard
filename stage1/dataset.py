@@ -81,7 +81,8 @@ def global_block_map(bars: dict[str, pd.DataFrame],
 
 def prepare(df: pd.DataFrame, tick: float,
             sessions_per_block: int = 63,
-            block_map: pd.Series | None = None) -> Prepared:
+            block_map: pd.Series | None = None,
+            bar_minutes: int = 5) -> Prepared:
     """
     Bars -> features, normalised scores, forward returns, block labels.
 
@@ -103,9 +104,9 @@ def prepare(df: pd.DataFrame, tick: float,
         dq=feats["DQ"],
         dq_pct=core.trailing_percentile(feats["DQ"]),
         conv_pct=core.trailing_percentile(feats["CONV"]),
-        r1=core.forward_return(df, feats["atr_prev"], h=1),
-        r2=core.forward_return(df, feats["atr_prev"], h=2),
-        r3=core.forward_return(df, feats["atr_prev"], h=3),
+        r1=core.forward_return(df, feats["atr_prev"], h=1, bar_minutes=bar_minutes),
+        r2=core.forward_return(df, feats["atr_prev"], h=2, bar_minutes=bar_minutes),
+        r3=core.forward_return(df, feats["atr_prev"], h=3, bar_minutes=bar_minutes),
         blocks=blocks,
     )
 

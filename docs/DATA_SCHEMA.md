@@ -190,6 +190,101 @@ in the commit message.
 
 ---
 
+## 7a. HF Data Library (hfdatalibrary.com) — source-specific notes
+
+The library is 1-minute OHLCV for 1,391 US stocks/ETFs back to 2002, with two
+disclosed caveats that matter here.
+
+### The IEX break is not a volume caveat
+
+The vendor states: *"survivor-biased universe pre-2022; IEX source break
+2022-03-01 (volumes not comparable across it)"*.
+
+Stage 1 uses no volume, so it is tempting to wave this through. **Do not.** IEX
+carries a small share of consolidated volume. If the *bars* after the break are
+built from IEX prints only, then each bar's high and low come from a sparse
+subset of the tape, and every ratio this study measures — body/range,
+shadow/range, close location — is computed on an **attenuated range**. That is
+not a volume caveat; it is a change in the measurement instrument landing in the
+middle of the sample, and pooling across it would mix two different things.
+
+This is measurable, not a matter of opinion. Variables 17–21 of the library's
+dictionary are exactly the diagnostics needed — traded bars, gap rate, observed
+bars, longest gap, max bars since last trade — per ticker per day:
+
+```bash
+export ELKASSABGIDATA_KEY=...
+python -m stage1.hf_quality --tickers SPY TLT GLD FXE
+```
+
+Pre-registered decision rule: post-break mean gap rate more than **2 percentage
+points** above pre-break means the eras are not the same measurement.
+
+**Default recommendation: use the pre-break consolidated-tape era only**
+(`--end 2022-02-28`). This costs nothing. Common history for the four
+instruments starts when FXE launched (Dec 2005), giving roughly **4,050
+sessions** against the 1,762 that Option A requires — about 56 evaluation
+blocks against the 20 needed.
+
+Honest limitation to record in the results memo: a pre-2022 study says nothing
+about the current microstructure regime. Stage 1 asks whether the information
+exists at all, not whether it is live today. If Stage 1 returns Verdict A,
+confirming on post-break data becomes a separate question — and one this source
+cannot answer.
+
+### Survivorship
+
+The vendor flags the universe as survivor-biased pre-2022. Stage 1 names four
+specific ETFs that all still exist rather than screening a universe, so **no
+selection is performed on the data**. The bias is therefore mild — but it is not
+zero, since these are names chosen with hindsight of their survival. Record it,
+and do not generalise a Stage 1 result beyond "major liquid ETFs".
+
+### Resampling 1-minute → 5-minute
+
+`stage1.hf_prepare` does this. Five decisions, each of which can silently
+corrupt the geometry if made the lazy way:
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | **RTH filter first, resample second** | Aggregating first lets a pre-market minute into the 09:30 bar, corrupting the open and low of the most-traded bar of the day |
+| 2 | **Group by (session, bin)** | No 5-minute bar may straddle the close |
+| 3 | **Drop bins with < 4 of 5 minutes** | A bar built from 2 minutes has a systematically narrower range, which inflates `CONV` and deflates `WB` — it biases precisely what Stage 1 measures |
+| 4 | **Reindex to the session grid, leaving NaN holes** | Without this, `.shift(-1)` lands on the next *existing* bar, silently turning `r_1` into a 10-minute return while still labelling it `r_1`. Longer horizons carry more variance, so this inflates apparent signal |
+| 5 | **Never forward-fill** | A filled bar has fabricated geometry: zero range, zero body, undefined close location |
+
+Aggregation is `open=first, high=max, low=min, close=last, volume=sum`, with
+first/last taken in time order.
+
+Point 4 is now enforced in `core.forward_return` via a strict spacing check, so
+a gappy series from *any* source cannot produce a mislabelled horizon.
+
+The 1-minute bar label (open- vs close-stamped) is **detected from the data and
+reported**, and `hf_prepare` refuses to run if it is indeterminate rather than
+guessing.
+
+### Commands for this source
+
+```bash
+export ELKASSABGIDATA_KEY=...          # never paste the key into chat or code
+
+# 1. Measure the break. Read its verdict before anything else.
+python -m stage1.hf_quality --tickers SPY TLT GLD FXE
+
+# 2. Pull and resample, pre-break era only.
+python -m stage1.hf_prepare --tickers SPY TLT GLD FXE \
+    --start 2006-01-01 --end 2022-02-28 --out data/raw
+
+# 3. Then the standard sequence in section 8.
+```
+
+`hf_prepare` writes `data/manifest.yaml` for you. **Verify `tick_size` and
+`adjustment` against the vendor before running the validator** — those two are
+written as defaults (0.01, multiplicative) and are not detectable from bars
+alone.
+
+---
+
 ## 8. Commands
 
 ```bash

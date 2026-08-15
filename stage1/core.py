@@ -196,7 +196,8 @@ def trailing_percentile(
 # ---------------------------------------------------------------------------
 
 def forward_return(
-    df: pd.DataFrame, atr_prev: pd.Series, h: int = 1
+    df: pd.DataFrame, atr_prev: pd.Series, h: int = 1,
+    bar_minutes: int | None = None,
 ) -> pd.Series:
     """
     Section 2.1-2.2. (C[t+h] - C[t]) / ATR_20(t-1), NaN if t and t+h are in
@@ -205,11 +206,25 @@ def forward_return(
     The same-session mask is not optional. An overnight gap carries 3-10x a
     single intraday bar's variance; letting a handful of them into the sample
     lets them dominate whichever bucket they land in.
+
+    `bar_minutes` adds a STRICT SPACING check and should always be supplied for
+    real data. On a gappy series, .shift(-h) lands on the next EXISTING row,
+    which may be 10 or 30 minutes later — silently turning the target into a
+    longer-horizon return while still labelling it r_1. That inflates the
+    apparent signal because longer horizons carry more variance. With
+    bar_minutes set, a forward return is defined only when the successor bar is
+    exactly h * bar_minutes later.
     """
     c = df["close"]
     sess = _session_key(df.index)
-    same_session = sess.shift(-h) == sess
-    return ((c.shift(-h) - c) / atr_prev).where(same_session)
+    ok = sess.shift(-h) == sess
+
+    if bar_minutes is not None:
+        delta = pd.Series(df.index, index=df.index).shift(-h) - pd.Series(
+            df.index, index=df.index)
+        ok &= delta == pd.Timedelta(minutes=h * bar_minutes)
+
+    return ((c.shift(-h) - c) / atr_prev).where(ok)
 
 
 # ---------------------------------------------------------------------------

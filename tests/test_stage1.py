@@ -266,6 +266,108 @@ def test_rth_filter_keeps_78_bars():
     assert len(io.filter_rth(df, _spec(), 5)) == 78
 
 
+
+# ---------------------------------------------------------------------------
+# HF 1-minute -> 5-minute resampling
+# ---------------------------------------------------------------------------
+
+def _one_min_session(day: str, n: int = 390, start_price: float = 100.0):
+    idx = pd.date_range(f"{day} 09:30", periods=n, freq="1min", tz="America/New_York")
+    rng = np.random.default_rng(abs(hash(day)) % 1000)
+    close = start_price + np.cumsum(rng.normal(0, 0.02, n))
+    return pd.DataFrame({
+        "open": close - 0.01, "high": close + 0.03,
+        "low": close - 0.03, "close": close,
+        "volume": rng.integers(100, 5000, n),
+    }, index=idx)
+
+
+def test_resample_ohlc_is_correct():
+    from stage1 import hf_prepare
+    one = _one_min_session("2019-01-02")
+    bars, stats = hf_prepare.resample_to_5min(one)
+
+    assert len(bars) == 78, f"expected 78 five-minute bars, got {len(bars)}"
+    assert bars.index[0].strftime("%H:%M") == "09:30"
+    assert bars.index[-1].strftime("%H:%M") == "15:55"
+
+    first5 = one.iloc[:5]
+    b0 = bars.iloc[0]
+    assert b0["open"] == first5["open"].iloc[0]
+    assert b0["close"] == first5["close"].iloc[-1]
+    assert b0["high"] == first5["high"].max()
+    assert b0["low"] == first5["low"].min()
+    assert b0["volume"] == first5["volume"].sum()
+
+
+def test_resample_never_crosses_session_boundary():
+    from stage1 import hf_prepare
+    two = pd.concat([_one_min_session("2019-01-02"), _one_min_session("2019-01-03")])
+    bars, _ = hf_prepare.resample_to_5min(two)
+
+    per_session = bars.groupby(bars.index.normalize()).size()
+    assert (per_session == 78).all(), "a bin spanned the overnight gap"
+
+
+def test_resample_drops_incomplete_bins_and_leaves_a_hole():
+    from stage1 import hf_prepare
+    one = _one_min_session("2019-01-02")
+    # Remove 4 of the 5 minutes in the 10:00 bin -> incomplete, must be dropped.
+    drop = one.index[(one.index.hour == 10) & (one.index.minute < 4)]
+    bars, stats = hf_prepare.resample_to_5min(one.drop(index=drop))
+
+    assert stats["bins_dropped"] == 1
+    ten = pd.Timestamp("2019-01-02 10:00", tz="America/New_York")
+    assert ten in bars.index, "grid row missing entirely; should be a NaN hole"
+    assert np.isnan(bars.loc[ten, "close"]), "hole was filled instead of left NaN"
+
+
+def test_resample_excludes_extended_hours():
+    from stage1 import hf_prepare
+    pre = pd.date_range("2019-01-02 04:00", "2019-01-02 09:29", freq="1min",
+                        tz="America/New_York")
+    extended = pd.DataFrame({"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0,
+                             "volume": 1}, index=pre)
+    bars, _ = hf_prepare.resample_to_5min(pd.concat([extended, _one_min_session("2019-01-02")]))
+
+    assert bars.index[0].strftime("%H:%M") == "09:30"
+    assert bars["low"].min() > 1.0, "a pre-market bar leaked into the RTH series"
+
+
+def test_one_minute_label_detection():
+    from stage1 import hf_prepare
+    open_idx = pd.date_range("2019-01-02 09:30", periods=390, freq="1min",
+                             tz="America/New_York")
+    assert hf_prepare.detect_one_minute_label(open_idx) == "open"
+
+    close_idx = pd.date_range("2019-01-02 09:31", periods=390, freq="1min",
+                              tz="America/New_York")
+    assert hf_prepare.detect_one_minute_label(close_idx) == "close"
+
+
+def test_forward_return_is_nan_across_a_hole():
+    """
+    The reason holes must stay in the index: without the strict spacing check,
+    shift(-1) over a missing bar silently produces a 10-minute return labelled
+    as r_1.
+    """
+    idx = pd.DatetimeIndex([
+        pd.Timestamp("2019-01-02 09:30"), pd.Timestamp("2019-01-02 09:35"),
+        pd.Timestamp("2019-01-02 09:45"),          # 09:40 is missing
+        pd.Timestamp("2019-01-02 09:50"),
+    ])
+    df = pd.DataFrame({"open": 100.0, "high": 101.0, "low": 99.0,
+                       "close": [100.0, 101.0, 103.0, 104.0]}, index=idx)
+    atr = pd.Series(1.0, index=idx)
+
+    loose = core.forward_return(df, atr, h=1)
+    strict = core.forward_return(df, atr, h=1, bar_minutes=5)
+
+    assert loose.iloc[1] == 2.0, "sanity: unguarded shift spans the hole"
+    assert np.isnan(strict.iloc[1]), "strict spacing did not reject the 10-min jump"
+    assert strict.iloc[0] == 1.0, "a correctly spaced bar was rejected"
+
+
 if __name__ == "__main__":
     passed = failed = 0
     for name, fn in sorted(globals().items()):

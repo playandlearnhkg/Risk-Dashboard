@@ -49,6 +49,7 @@ class InstrumentAudit:
     declared_tick: float = 0.0
     inferred_tick: float = 0.0
     invalid_bars: int = 0
+    missing_bars: int = 0
     invalid_fraction: float = 0.0
     zero_range_bars: int = 0
     repeated_ohlc_runs: int = 0
@@ -138,7 +139,11 @@ def audit_instrument(spec: io.InstrumentSpec, bar_minutes: int) -> tuple[pd.Data
 
     # --- Price sanity -------------------------------------------------------
     o, h, l, c = df["open"], df["high"], df["low"], df["close"]
-    bad_ohlc = ~((l <= np.minimum(o, c)) & (h >= np.maximum(o, c)))
+    # Rows may be NaN placeholders on a reindexed session grid (a bar with no
+    # trades). Those are legitimate; only rows carrying prices are checked.
+    present = o.notna() & h.notna() & l.notna() & c.notna()
+    a.missing_bars = int((~present).sum())
+    bad_ohlc = present & ~((l <= np.minimum(o, c)) & (h >= np.maximum(o, c)))
     if bad_ohlc.any():
         a.errors.append(f"{int(bad_ohlc.sum())} bars violate low <= min(O,C) <= max(O,C) <= high")
     if (df[["open", "high", "low", "close"]] <= 0).to_numpy().any():
@@ -232,7 +237,7 @@ def _print_audit(a: InstrumentAudit) -> None:
     print(f"    bar label decl/infer  : {a.declared_bar_label} / {a.inferred_bar_label}")
     print(f"    tick decl/infer       : {a.declared_tick:g} / {a.inferred_tick:.6g}")
     print(f"    degenerate bars       : {a.invalid_bars:,} ({a.invalid_fraction:.2%})"
-          f"   zero-range: {a.zero_range_bars:,}")
+          f"   zero-range: {a.zero_range_bars:,}   empty-grid: {a.missing_bars:,}")
     print(f"    duplicates dropped    : {a.duplicates_dropped:,}"
           f"   repeated OHLC: {a.repeated_ohlc_runs:,}")
     for w in a.warnings:
