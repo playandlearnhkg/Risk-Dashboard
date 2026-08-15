@@ -65,8 +65,13 @@ def build(ticker: str, start: dt.date, end: dt.date, seed: int,
             local = t.timetz()
             regular = dt.time(9, 30) <= local.replace(tzinfo=None) < dt.time(16, 0)
             step = rng.normal(0, 0.0008 if regular else 0.0003)
-            o = px
-            c = px * (1 + step)
+            # Real 1-minute bars are NOT continuous: a bar's open is not
+            # exactly the previous bar's close. Without this jump a
+            # breakout measured at a bar's open is arithmetically
+            # impossible, which silently makes any breakout strategy
+            # untestable on these fixtures.
+            o = px * (1 + rng.normal(0, 0.0003))
+            c = o * (1 + step)
             hi = max(o, c) * (1 + abs(rng.normal(0, 0.0004)))
             lo = min(o, c) * (1 - abs(rng.normal(0, 0.0004)))
             vol = float(rng.integers(2_000, 40_000) if regular

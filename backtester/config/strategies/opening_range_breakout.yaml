@@ -1,0 +1,49 @@
+# Opening Range Breakout -- a non-earnings strategy, included to show the
+# validation gate is strategy-agnostic.
+
+strategy:
+  name: "Opening_Range_Breakout"
+  version: "0.1"
+
+universe:
+  post_earnings_only: false      # trades every session; no calendar needed
+  min_price: 10.0
+  min_market_cap: 0              # no point-in-time cap source required
+
+signal:
+  volume_ratio_min: 0.0          # unused by this strategy
+  candle: "any"
+  doji_max_body_ratio: 0.10
+  gap_required: false
+  entry_time: "09:35"
+  entry_price: "open"
+  volume_lookback_sessions: 20
+  atr_period: 14
+
+exit:
+  type: "time"
+  hold_minutes: 60
+  stop:
+    enabled: true
+    type: "atr"
+    multiple: 1.0
+
+direction: "signed"
+
+sizing:
+  method: "fixed_risk_pct"
+  risk_pct: 0.005
+  max_pct_equity_per_trade: 0.05
+  risk_unit: "atr"
+
+portfolio:
+  max_concurrent_positions: 5
+  starting_capital: 1000000
+  max_gross_exposure: 1.0
+
+costs:
+  round_trip_bps: 6.6
+
+data:
+  dir: "data"
+  bar_size: "1m"

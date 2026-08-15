@@ -36,6 +36,7 @@ from engine import capacity as CAP  # noqa: E402
 from engine import metrics as MET  # noqa: E402
 from engine import robustness as ROB  # noqa: E402
 from engine import validation as VAL  # noqa: E402
+from engine.gate import GateThresholds, Verdict, run_gate  # noqa: E402
 from engine.universe import (AllSessions, UniverseError,  # noqa: E402
                              from_config as universe_from_config)
 from strategies.core_post_earnings import \
@@ -121,6 +122,10 @@ def main() -> int:
                     help="the standardised report: both stop variants, "
                          "year-by-year, distribution, cost sweep, 2022-2025 "
                          "stress period, trade logs and plots")
+    ap.add_argument("--gate", action="store_true",
+                    help="run the validation gate and exit non-zero unless it "
+                         "PASSES; this is the check every strategy must clear "
+                         "before robustness or live consideration")
     ap.add_argument("--all", action="store_true",
                     help="--run --validate --robustness --capacity")
     ap.add_argument("--earnings", type=Path, default=None,
@@ -195,7 +200,7 @@ def main() -> int:
 
     need_engine = (a.signals or a.verify or a.run or a.validate
                    or a.robustness or a.capacity
-                   or a.full_validation)
+                   or a.full_validation or a.gate)
     if need_engine:
         strat = CorePostEarningsContinuation(cfg)
         frames = loader.load_many(loader.tickers, start=cfg.data.start,
@@ -289,6 +294,20 @@ def main() -> int:
             print(m.summary())
             written = m.write(results, prefix="validation_")
             print(f"\nwrote {len(written)} files to {results}")
+
+        if a.gate:
+            res = run_gate(strat, cfg, frames, provider=provider,
+                           selection=SelectionRule(a.selection),
+                           strategy_factory=lambda b, _c=cfg:
+                               CorePostEarningsContinuation(_c))
+            print("\n" + res.report())
+            written = res.write(results)
+            print(f"\nwrote {len(written)} files to {results}")
+            if res.verdict is not Verdict.PASS:
+                print(f"\nGATE {res.verdict.value}: do not proceed to "
+                      f"robustness, capacity or live sizing until the "
+                      f"blocking items are resolved.", file=sys.stderr)
+                return 4 if res.verdict is Verdict.FAIL else 5
 
         if a.full_validation:
             rep = VAL.run(cfg, sigs_obj, frames, out_dir=results)

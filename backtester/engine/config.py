@@ -157,8 +157,12 @@ class SignalConfig:
         except ValueError as exc:
             raise ConfigError(f"{path}.entry_time: {exc}") from exc
         return cls(
+            # 0.0 means "no volume filter". Requiring a positive value
+            # forced every strategy to carry a threshold shaped around
+            # the post-earnings one, which is the config over-fitting to
+            # its first client.
             volume_ratio_min=_num(raw, "volume_ratio_min", path, lo=0.0,
-                                  lo_open=True, default=1.0),
+                                  default=1.0),
             candle=_choice(raw, "candle", path, CANDLE_TYPES, "any"),
             doji_max_body_ratio=_num(raw, "doji_max_body_ratio", path,
                                      lo=0.0, hi=1.0, hi_open=True, default=0.10),
