@@ -25,6 +25,7 @@ sys.path.insert(0, str(ROOT))
 from engine import capacity as CAP  # noqa: E402
 from engine import metrics as M  # noqa: E402
 from engine import robustness as R  # noqa: E402
+from engine import validation as VAL  # noqa: E402
 from engine.config import BacktestConfig, ConfigError  # noqa: E402
 from engine.data_loader import DataLoader  # noqa: E402
 from engine.portfolio import Portfolio  # noqa: E402
@@ -406,6 +407,71 @@ def t_capacity_dashboard_renders():
     tab = CAP.run_suite(cfg, sigs, frames)
     txt = CAP.dashboard(tab, cfg, CAP.haircut(tab, cfg))
     assert "RISK & CAPACITY" in txt and "RECOMMENDED LIVE LIMITS" in txt
+
+
+# ---------------------------------------------------------------- validation
+
+def t_validation_reports_both_stop_variants():
+    cfg, sigs, frames = _suite_inputs()
+    rep = VAL.run(cfg, sigs, frames, out_dir=None, make_plots=False)
+    assert set(rep.variants) == {"No stop", "ATR -1.0 stop"}
+    assert set(rep.stress) == set(rep.variants)
+
+
+def t_validation_stop_is_wired_not_just_unreached():
+    """Guard against a report whose two variants are identical by BUG.
+
+    On the fixtures a 1 ATR stop is never reached, so both variants agree
+    -- which is indistinguishable from the stop never being applied. A
+    deliberately tight stop must move the numbers.
+    """
+    cfg, sigs, frames = _suite_inputs()
+    saved = VAL.VARIANTS
+    try:
+        VAL.VARIANTS = [("no_stop", "No stop", False, 1.0),
+                        ("tight", "tight", True, 0.1)]
+        rep = VAL.run(cfg, sigs, frames, out_dir=None, make_plots=False)
+    finally:
+        VAL.VARIANTS = saved
+    a = rep.variants["No stop"].overall["expectancy_bps"]
+    b = rep.variants["tight"].overall["expectancy_bps"]
+    assert abs(a - b) > 1e-9, "a 0.1 ATR stop changed nothing; stop not wired"
+    assert (rep.variants["tight"].trades["exit_reason"] == "stop").any()
+
+
+def t_validation_cost_sweep_covers_the_grid():
+    cfg, sigs, frames = _suite_inputs()
+    rep = VAL.run(cfg, sigs, frames, costs=[6.6, 15.0], out_dir=None,
+                  make_plots=False)
+    assert set(rep.costs["cost_bps"]) == {6.6, 15.0}
+    assert len(rep.costs) == 2 * len(VAL.VARIANTS)
+    for v, g in rep.costs.groupby("variant"):
+        e = g.sort_values("cost_bps")["expectancy_bps"].to_numpy()
+        assert e[0] > e[1], f"{v}: higher cost must lower expectancy"
+
+
+def t_validation_stress_is_annualised_on_its_own_window():
+    cfg, sigs, frames = _suite_inputs()
+    rep = VAL.run(cfg, sigs, frames, out_dir=None, make_plots=False)
+    for label, m in rep.stress.items():
+        if len(m.trades):
+            d = pd.to_datetime(pd.Series(list(m.trades["date"]))).dt.date
+            assert d.min() >= dt.date(2022, 1, 1), (label, d.min())
+
+
+def t_validation_summary_and_write():
+    import tempfile
+    cfg, sigs, frames = _suite_inputs()
+    rep = VAL.run(cfg, sigs, frames, costs=[6.6], out_dir=None,
+                  make_plots=False)
+    txt = rep.summary()
+    for section in ("FULL VALIDATION", "STRESS PERIOD", "COST SENSITIVITY",
+                    "SIDE BY SIDE"):
+        assert section in txt, section
+    with tempfile.TemporaryDirectory() as d:
+        written = rep.write(d)
+        assert any(p.name == "validation_summary.txt" for p in written)
+        assert any("side_by_side" in p.name for p in written)
 
 
 def main() -> int:

@@ -35,6 +35,7 @@ from engine.portfolio import Portfolio, SelectionRule  # noqa: E402
 from engine import capacity as CAP  # noqa: E402
 from engine import metrics as MET  # noqa: E402
 from engine import robustness as ROB  # noqa: E402
+from engine import validation as VAL  # noqa: E402
 from engine.universe import (AllSessions, UniverseError,  # noqa: E402
                              from_config as universe_from_config)
 from strategies.core_post_earnings import \
@@ -116,6 +117,10 @@ def main() -> int:
     ap.add_argument("--capacity", action="store_true",
                     help="risk and capacity suite (step 7): borrow, slippage, "
                          "participation, concentration, execution delay")
+    ap.add_argument("--full-validation", action="store_true",
+                    help="the standardised report: both stop variants, "
+                         "year-by-year, distribution, cost sweep, 2022-2025 "
+                         "stress period, trade logs and plots")
     ap.add_argument("--all", action="store_true",
                     help="--run --validate --robustness --capacity")
     ap.add_argument("--earnings", type=Path, default=None,
@@ -142,6 +147,7 @@ def main() -> int:
     a = ap.parse_args()
     if a.all:
         a.run = a.validate = a.robustness = a.capacity = True
+        a.full_validation = True
 
     try:
         cfg = BacktestConfig.from_yaml(a.config)
@@ -188,7 +194,8 @@ def main() -> int:
             return 2
 
     need_engine = (a.signals or a.verify or a.run or a.validate
-                   or a.robustness or a.capacity)
+                   or a.robustness or a.capacity
+                   or a.full_validation)
     if need_engine:
         strat = CorePostEarningsContinuation(cfg)
         frames = loader.load_many(loader.tickers, start=cfg.data.start,
@@ -281,6 +288,12 @@ def main() -> int:
             print()
             print(m.summary())
             written = m.write(results, prefix="validation_")
+            print(f"\nwrote {len(written)} files to {results}")
+
+        if a.full_validation:
+            rep = VAL.run(cfg, sigs_obj, frames, out_dir=results)
+            print("\n" + rep.summary())
+            written = rep.write(results)
             print(f"\nwrote {len(written)} files to {results}")
 
         if a.robustness:
