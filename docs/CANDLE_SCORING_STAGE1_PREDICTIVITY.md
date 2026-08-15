@@ -713,15 +713,55 @@ deflation.
 Note the ~4× advantage of the continuous IC test over the binary concordance
 test at the same effect size. **Run the IC test first** (§9).
 
-### 8.3 Practical recommendation
+### 8.3 History budget — corrected arithmetic
+
+An earlier draft of this section said "5 years" and "100 sessions warm-up". Both
+were wrong, and the error only became visible when the trailing percentile was
+bucketed by time of day (§1.5). The correct calculation:
+
+**Warm-up is measured in sessions, not bars.** The percentile reference window
+holds `min_obs` observations *of the same time-of-day slot*. With 30-minute
+slots there are 13 slots per session, so reaching `min_obs = 250` takes **250
+sessions** — regardless of how many bars per session the instrument has. The
+reference implementation confirms this exactly: 300 synthetic sessions × 78 bars
+= 23,400 bars, of which 3,250 (= 13 slots × 250) are unscored warm-up, leaving
+20,130 scored.
+
+```
+warm-up      250 sessions   (min_obs = 250, consumed before the first score)
+evaluation  1260 sessions   (>= 20 blocks x 63 sessions, section 4.1)
+holdout      252 sessions   (12 months sealed, section 4.3)
+                 ----
+total       1762 sessions   ~= 7 years per instrument
+```
 
 | Requirement | Specification |
 |---|---|
-| Minimum history | **5 years**, to reach ≥ 20 quarterly blocks (§4.1) plus the 12-month sealed holdout |
-| Minimum raw bars | **≥ 150,000** five-minute bars across the pooled universe |
+| **Minimum history** | **7 years** per instrument at `min_obs = 250` — *not* 5. See the resolution options below |
+| Minimum raw bars | **≥ 150,000** five-minute bars of *scored* (post-warm-up) data across the pooled universe |
 | Instruments | **3–6**, chosen for **low mutual correlation** — e.g. an equity index future, a rates future, a large-cap FX pair, a liquid crypto pair |
-| Warm-up | 500 bars + 100 sessions before the first evaluation block |
 | Universe | Futures and large ETFs preferred — **no survivorship problem, because there is no membership selection**. Free retail feeds do not provide point-in-time index membership and silently drop delisted tickers, so single-name universes are not used unless a genuine PIT constituent history is available |
+
+**Resolution options if 7 years is not obtainable.** These change pre-registered
+constants, so **one must be chosen and frozen before Step 0**, not after seeing
+results:
+
+| Option | Change | Total history needed | Cost |
+|---|---|---|---|
+| **A** (default) | keep `min_obs = 250`, `W = 500`, blocks of 63 | ~7 years | none |
+| **B** | `min_obs = 125`, `W = 250` | ~6 years | noisier percentile estimates; the score is a rank, so this degrades precision, not validity |
+| **C** | blocks of 42 sessions, still ≥ 20 blocks | ~6 years | fewer observations per block, wider per-block CIs |
+| **D** | pool more instruments, keep per-instrument history short | unchanged per instrument | **does not work** — blocks are calendar periods, so pooling adds width, not length. §4.1 needs ≥ 20 *time* blocks |
+
+Because nothing in Stage 1 is fitted (§0.1), `min_obs` and `W` are precision
+parameters rather than overfitting risks — but they are still pre-registered
+constants, and changing them after seeing a result is a new study.
+
+**Option D is called out explicitly because it is the tempting wrong answer.**
+Adding instruments raises `n` per block and helps the power calculations of §8.1
+and §8.2; it does nothing for the ≥ 20-block consistency requirement, which is
+the safeguard against a single favourable period. Short history cannot be bought
+with breadth.
 
 **On pooling:** adding ten correlated US large-caps is close to useless — `K_eff`
 lands near 2.7 (§5.2). Adding four weakly-correlated instruments across asset
