@@ -1,0 +1,8 @@
+# Stage 1 working data — source files stay local; only their hashes are recorded.
+data/raw/
+data/clean/
+results/
+
+__pycache__/
+*.pyc
+.venv/

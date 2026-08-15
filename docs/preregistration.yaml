@@ -3,49 +3,70 @@
 # Spec: docs/CANDLE_SCORING_STAGE1_PREDICTIVITY.md
 # Code: docs/stage1_reference.py
 #
-# STATUS: DRAFT — NOT YET FROZEN.
+# The pre-registration has TWO halves, frozen at different times, because they
+# protect against different things.
 #
-# Fields marked FROZEN are locked and must not change.
-# Fields marked TODO are data-dependent and must be filled before freezing.
+#   ANALYSIS half  (status below) - the score, targets, bucketing, hypotheses,
+#     trial count and decision gates. These are CHOICES, and choosing them after
+#     seeing results is the failure this document exists to prevent. FROZEN NOW.
 #
-# Freezing procedure (this is Step 0 of the execution order):
-#   1. Fill every TODO.
-#   2. Choose ONE history option in section 8.3 of the spec and record it below.
-#   3. Set status: FROZEN and commit.
-#   4. Record the commit hash in every results report thereafter.
+#   DATA half      (data.manifest_status) - period, tick size, timestamp
+#     convention, content hashes. These are FACTS about the data, DISCOVERED by
+#     running stage1.validate, not chosen. They are stamped by the validator at
+#     execution Step 1 and recorded in data/clean/data_manifest.json.
 #
-# Nothing may be run against real data before status: FROZEN. Running first and
-# freezing afterwards is not pre-registration; it is documentation of a choice
-# already made.
+# Recording what the data IS carries no degree of freedom, so it does not need
+# to precede validation. Recording what will COUNT AS A RESULT does, and it is
+# locked below.
+#
+# Instrument selection is a CHOICE and therefore sits in the analysis half.
+# Substituting instruments to obtain adequate statistical power (Step 2) is
+# legitimate. Substituting them after seeing any IC, bucket or quadrant number
+# is not, and voids the pre-registration.
 
-status: DRAFT
+status: FROZEN_ANALYSIS
 prereg_version: 1
 stage: 1_predictivity_only
-frozen_at: TODO          # ISO timestamp, set when status -> FROZEN
-frozen_commit: TODO      # git hash of this file at freeze
+frozen_at: 2026-08-15
+frozen_commit: recorded_in_commit_message
+history_option: A        # min_obs 250, W 500, blocks of 63, ~7 years/instrument
 
 # ---------------------------------------------------------------------------
 # Data — all TODO until sourced and validated (Step 1)
 # ---------------------------------------------------------------------------
 data:
-  instruments: TODO           # 3-6, low mutual correlation, see spec 8.3
+  manifest_status: PENDING_VALIDATION   # -> VERIFIED once stage1.validate passes
+
+  # DEFAULT PROPOSAL, frozen unless explicitly substituted before Step 3.
+  # ETFs rather than futures: one shared 09:30-16:00 RTH session (so the
+  # time-of-day buckets align across instruments), no continuous-contract roll
+  # splices to create fake bars, and no index membership to get wrong. Four
+  # distinct macro drivers keeps rho_bar low, which is what K_eff rewards.
+  # Deliberately NOT four equity ETFs: ten correlated large caps give K_eff
+  # ~2.7, not 10.
+  instruments:
+    - SPY      # US equity index
+    - TLT      # long duration rates
+    - GLD      # gold
+    - FXE      # EUR/USD  (substitute 6E futures if FXE liquidity is too thin)
   base_timeframe: 5min        # FROZEN
   secondary_timeframe: 1min   # FROZEN (used only in execution step 11)
+  # Everything below is STAMPED BY THE VALIDATOR, not declared by hand.
   period:
-    start: TODO
-    end: TODO
-  holdout_sealed:             # last 12 months; single look, at execution step 14
-    start: TODO
-    end: TODO
-  vendor: TODO
-  session_hours: TODO         # e.g. "09:30-16:00 America/New_York, RTH only"
+    start: PENDING
+    end: PENDING
+  holdout_sealed:             # last 252 sessions; single look, at execution step 14
+    start: PENDING
+    end: PENDING
+  vendor: PENDING
+  session_hours: "09:30-16:00 America/New_York, RTH only"
   extended_hours_policy: exclude   # FROZEN — RTH only; see red flags in spec
-  bar_timestamp_convention: TODO   # open_labelled | close_labelled — VERIFY, never assume
-  timezone_of_raw_stamps: TODO     # e.g. "epoch_ms_utc"
-  adjustment_convention: TODO      # multiplicative | additive | none
-  tick_size: TODO
-  session_calendar_source: TODO    # must include holidays AND half-days
-  snapshot_hash: TODO              # sha256 of the immutable local copy
+  bar_timestamp_convention: PENDING   # open_labelled | close_labelled — VERIFY, never assume
+  timezone_of_raw_stamps: PENDING     # e.g. "epoch_ms_utc"
+  adjustment_convention: PENDING      # multiplicative | additive | none
+  tick_size: PENDING
+  session_calendar_source: PENDING    # must include holidays AND half-days
+  snapshot_hash: PENDING              # sha256 of the immutable local copy
 
 # ---------------------------------------------------------------------------
 # Score — FROZEN, zero fitted parameters
@@ -117,11 +138,14 @@ bucketing:
 # Evaluation — FROZEN except where noted
 # ---------------------------------------------------------------------------
 evaluation:
-  history_option: TODO          # A | B | C  — see spec 8.3. Choose before freeze
+  history_option: A             # LOCKED: min_obs 250, W 500, ~7 years/instrument
   blocks:
-    length_sessions: 63         # 42 under history option C
-    min_blocks: 20
+    length_sessions: 63         # Option A
+    min_blocks: 20              # CALENDAR blocks, not instrument-blocks
     overlapping: false
+  warmup_sessions: 250          # min_obs=250 same-slot observations
+  holdout_sessions: 252
+  min_history_sessions: 1762    # 250 + 1260 + 252
   rolling_view: {window: 126, step: 21, statistical_weight: none}
   bootstrap: {type: stationary_block, mean_block: 78, resamples: 10000}
   permutation: {draws: 1000, preserve: [marginals, time_of_day_mix]}
