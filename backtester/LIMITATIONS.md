@@ -1,7 +1,8 @@
 # Known limitations and TODOs
 
-Status after step 7. Ordered by how badly each one would mislead you if
-you forgot about it, not by how hard it is to fix.
+Status after step 7 plus the gate's sensitivity and benchmark stages.
+Ordered by how badly each one would mislead you if you forgot about it,
+not by how hard it is to fix.
 
 ## 1. Universe filters are ENFORCED (resolved)
 
@@ -105,7 +106,40 @@ about. `audit_source` and code review cover that case.
 `tests/test_pit_strategy.py::t_instance_form_misses_captured_state`
 asserts this limitation deliberately, so it stays visible.
 
-## 8. Smaller things
+## 8. The gate's sensitivity and benchmark stages have four blind spots
+
+Both stages were added after step 7 and each has a boundary worth
+knowing before a number from them is quoted.
+
+- **The sensitivity sweep is one-at-a-time.** Each parameter moves alone.
+  A strategy that is robust to any single parameter and fragile to a
+  *pair* of them will pass. A full grid is combinatorially expensive and
+  would itself start to look like a search; if you need it, run it
+  deliberately and outside the gate.
+- **The sweep is relative, so a parameter set to zero is skipped.**
+  `volume_ratio_min: 0.0` means "no volume filter", and every relative
+  step of zero is still zero. That parameter is reported as skipped with
+  the reason, not silently passed.
+- **`n_binding` is the number that matters on thin data.** If every
+  variant returns the baseline result unchanged, the parameters never
+  bound on that sample and the gate reports NEEDS REVIEW rather than
+  perfect stability. On the fixtures — which produce one trade — this is
+  exactly what happens, and it is correct.
+- **Longer holds are intraday only.** `hold_minutes` is capped at the
+  session close, so "held longer" means up to 16:00, never overnight and
+  never multi-day. A multi-day comparison needs the portfolio loop that
+  section 6 says does not exist yet. If a longer-hold row shows a high
+  `time_stale` share the table says so in a note, because that row then
+  understates what holding longer would really have done.
+
+And one about the comparison itself: **the Sharpe margin over
+buy-and-hold is structurally flattered for any strategy that is idle
+most of the time**, because its volatility is computed over sessions
+where it held nothing. `pct_days_active` and `deployed_vol` are printed
+beside it and the detail line names the problem, but no adjustment is
+applied — there is no single defensible one.
+
+## 9. Smaller things
 
 - **Selection under the concurrency cap** uses a fixed RNG seed (7) for
   `SelectionRule.RANDOM`, so a "random" run is one reproducible draw,

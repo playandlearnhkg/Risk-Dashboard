@@ -145,6 +145,15 @@ def main() -> int:
     ap.add_argument("--end", default=None, help="restrict to YYYY-MM-DD")
     ap.add_argument("--cost-bps", type=float, default=None,
                     help="override costs.round_trip_bps for this run")
+    ap.add_argument("--benchmark", default="SPY", metavar="TICKER",
+                    help="ticker used for the gate's buy-and-hold comparison. "
+                         "Loaded from the data directory if present; without "
+                         "it the gate reports NEEDS REVIEW on that check "
+                         "rather than skipping it silently")
+    ap.add_argument("--no-extended", action="store_true",
+                    help="skip the gate's parameter-sensitivity and benchmark "
+                         "tests (they re-run the whole path many times). The "
+                         "checks still appear in the report, as NEEDS REVIEW")
     ap.add_argument("--selection", default=SelectionRule.VOLUME_RATIO.value,
                     choices=[r.value for r in SelectionRule],
                     help="ex-ante rule for choosing which signals to take "
@@ -296,10 +305,30 @@ def main() -> int:
             print(f"\nwrote {len(written)} files to {results}")
 
         if a.gate:
+            # Loaded separately from `frames` so the comparison is
+            # independent of what the strategy traded. Note that a
+            # benchmark file sitting in the data directory IS also in
+            # `frames`, so under --no-universe the strategy would
+            # evaluate it as an ordinary name; the universe provider is
+            # what normally excludes it. If it is absent the gate says
+            # so in the report rather than dropping the comparison.
+            bench_bars = None
+            if a.benchmark and a.benchmark in loader.tickers:
+                bench_bars = loader.load(a.benchmark, start=cfg.data.start,
+                                         end=cfg.data.end)
+            elif a.benchmark:
+                print(f"\n  NOTE: no bars for benchmark {a.benchmark!r} in "
+                      f"{loader.catalog.data_dir}; the gate's buy-and-hold "
+                      f"comparison "
+                      f"will report NEEDS REVIEW.")
             res = run_gate(strat, cfg, frames, provider=provider,
                            selection=SelectionRule(a.selection),
                            strategy_factory=lambda b, _c=cfg:
-                               CorePostEarningsContinuation(_c))
+                               CorePostEarningsContinuation(_c),
+                           config_factory=CorePostEarningsContinuation,
+                           extended=not a.no_extended,
+                           benchmark_bars=bench_bars,
+                           benchmark_ticker=a.benchmark)
             print("\n" + res.report())
             written = res.write(results)
             print(f"\nwrote {len(written)} files to {results}")

@@ -115,6 +115,19 @@ def main() -> None:
     b1.to_parquet(OUT / "MSFT_20251015_20251120_1m.parquet")
     b2.to_parquet(OUT / "MSFT_20251110_20251215_1m.parquet")
 
+    # A benchmark series for the gate's buy-and-hold comparison. It goes
+    # in a SUBDIRECTORY on purpose: the catalog globs one level, so SPY
+    # is invisible to DataLoader(data/) and can never become a name the
+    # strategy trades. A benchmark that quietly joined the universe would
+    # be comparing the strategy partly against itself.
+    bdir = OUT / "benchmark"
+    bdir.mkdir(parents=True, exist_ok=True)
+    spy = build("SPY", dt.date(2025, 8, 1), dt.date(2025, 12, 15),
+                seed=23, px0=560.0)
+    spy.to_parquet(bdir / "SPY_20250801_20251215_1m.parquet")
+    print(f"{'benchmark/SPY_20250801_20251215_1m.parquet':44s} "
+          f"{len(spy):>7,} bars")
+
     # An earnings calendar for the fixtures, deliberately mixing all
     # three timing values so the provider's BMO / AMC / unknown paths are
     # all exercised by the example rather than only the happy one.

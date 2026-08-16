@@ -27,6 +27,23 @@ The middle verdict exists because "we cannot tell yet" and "this does
 not work" are different findings, and collapsing them into FAIL teaches
 people to ignore the gate.
 
+THE ORDER THE CHECKS RUN IN, AND WHY IT IS FIXED
+
+  1 INTEGRITY     is this measuring what we think it is measuring
+  2 ADEQUACY      is there enough of it to judge
+  3 PERFORMANCE   is there an edge, and does it survive worse fills
+  4 SENSITIVITY   is the edge a plateau or a single fitted point
+  5 BENCHMARKS    is it better than the obvious alternative
+
+Sensitivity and benchmarking run LAST because both are expensive -- each
+re-runs the whole signal-to-portfolio path several times -- and both are
+meaningless before the earlier stages clear. Measuring the parameter
+neighbourhood of a strategy that reads the future prices the
+neighbourhood of a leak. They do not change the precedence rule: any
+FAIL is a FAIL, so an integrity failure still cannot be outvoted, no
+matter how flat the sensitivity surface or how far ahead of the index
+the equity curve finished.
+
 WHAT THE GATE DOES NOT DO
 
 It does not tune anything, rank anything, or pick a best variant. It
@@ -43,10 +60,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from engine.benchmarks import BenchmarkResult, compare
 from engine.config import BacktestConfig
 from engine.metrics import Metrics, evaluate
 from engine.pit import LookAheadError, verify_no_lookahead
 from engine.portfolio import Portfolio, SelectionRule
+from engine.sensitivity import SensitivityResult, parameter_sensitivity
 from engine.universe import AllSessions, UniverseProvider
 
 
@@ -81,6 +100,31 @@ class GateThresholds:
     max_time_stale_share: float = 0.05
     max_gross_capped_share: float = 0.25
 
+    # -- parameter sensitivity: a plateau, or one fitted point?
+    # Share of the varied neighbourhood that must still make money. A
+    # strategy whose edge disappears when volume_ratio_min moves 10% was
+    # never robust; it was located.
+    review_sensitivity_profitable_share: float = 0.80
+    fail_sensitivity_profitable_share: float = 0.50
+    # Baseline expectancy divided by the median of its own neighbours.
+    # 1.0 is a plateau. Well above 1.0 is a spike, which is what a fitted
+    # parameter looks like from outside.
+    review_sensitivity_spike: float = 1.50
+    fail_sensitivity_spike: float = 3.00
+
+    # -- benchmarks: better than the obvious alternative?
+    # Sharpe margin the strategy must hold over buy-and-hold. Read this
+    # alongside pct_days_active: an intraday book idle 93% of the time
+    # has a structurally flattered Sharpe against a fully-invested index.
+    review_sharpe_margin_vs_index: float = 0.25
+    fail_sharpe_margin_vs_index: float = 0.00
+    # How far a LONGER hold of the same names may beat the configured
+    # hold before a human is asked why this hold length was chosen. A
+    # small negative, not zero: an exact tie should not trigger a review,
+    # and floating-point noise on two nearly identical curves lands
+    # either side of zero at random.
+    review_sharpe_margin_vs_longer_hold: float = -0.10
+
 
 @dataclass(frozen=True)
 class Check:
@@ -106,6 +150,8 @@ class GateResult:
     costs: pd.DataFrame
     samples: dict[str, pd.DataFrame]
     thresholds: GateThresholds
+    sensitivity: SensitivityResult | None = None
+    benchmarks: BenchmarkResult | None = None
     meta: dict = field(default_factory=dict)
 
     @property
@@ -174,6 +220,20 @@ class GateResult:
                   _fmt(self.metrics.by_year)]
         L += ["", "5. COST SENSITIVITY", "-" * 19, _fmt(self.costs)]
 
+        L += ["", "6. PARAMETER SENSITIVITY", "-" * 24]
+        if self.sensitivity is None:
+            L.append("  not run")
+        else:
+            L.append(self.sensitivity.summary())
+            if len(self.sensitivity.by_parameter):
+                L += ["", _fmt(self.sensitivity.by_parameter)]
+            if len(self.sensitivity.table):
+                L += ["", _fmt(self.sensitivity.table)]
+
+        L += ["", "7. BENCHMARKS", "-" * 13]
+        L.append("  not run" if self.benchmarks is None
+                 else self.benchmarks.summary())
+
         L += ["", "1. SAMPLE TRADES FOR MANUAL CHECK", "-" * 33]
         for name, s in self.samples.items():
             if len(s):
@@ -181,7 +241,7 @@ class GateResult:
 
         L += ["", "THRESHOLDS APPLIED", "-" * 18]
         for k, v in asdict(self.thresholds).items():
-            L.append(f"  {k:<32} {v}")
+            L.append(f"  {k:<38} {v}")
         return "\n".join(L)
 
     def write(self, out_dir: Path | str) -> list[Path]:
@@ -194,6 +254,17 @@ class GateResult:
                           ("gate_trades", self.metrics.trades)):
             p = out / f"{name}.csv"
             obj.to_csv(p, index=False)
+            paths.append(p)
+        if self.sensitivity is not None:
+            for name, obj in (("gate_sensitivity", self.sensitivity.table),
+                              ("gate_sensitivity_by_parameter",
+                               self.sensitivity.by_parameter)):
+                p = out / f"{name}.csv"
+                obj.to_csv(p, index=False)
+                paths.append(p)
+        if self.benchmarks is not None:
+            p = out / "gate_benchmarks.csv"
+            self.benchmarks.table.to_csv(p, index=False)
             paths.append(p)
         for name, s in self.samples.items():
             p = out / f"gate_sample_{name.replace(' ', '_')}.csv"
@@ -211,7 +282,10 @@ def run_gate(strategy, cfg: BacktestConfig, frames: dict[str, pd.DataFrame],
              provider: UniverseProvider | None = None,
              thresholds: GateThresholds | None = None,
              selection: SelectionRule = SelectionRule.VOLUME_RATIO,
-             strategy_factory=None, n_sample: int = 8) -> GateResult:
+             strategy_factory=None, n_sample: int = 8,
+             config_factory=None, extended: bool = True,
+             benchmark_bars: pd.DataFrame | None = None,
+             benchmark_ticker: str = "SPY") -> GateResult:
     """Run one configuration and judge it.
 
     `strategy` is any StrategyBase instance. `strategy_factory`, if
@@ -220,6 +294,25 @@ def run_gate(strategy, cfg: BacktestConfig, frames: dict[str, pd.DataFrame],
     data, which catches a strategy holding a frame it captured at
     construction. Without it the check still runs, but cannot see that
     case, and the report says so.
+
+    `config_factory` is `factory(config) -> StrategyBase` and is what the
+    sensitivity and longer-hold tests use to rebuild the strategy under a
+    varied configuration. It defaults to `type(strategy)(config)`, which
+    is correct for any strategy whose constructor takes only a config.
+    A strategy needing more must pass one, or those two tests report
+    NEEDS REVIEW rather than quietly measuring the unvaried baseline
+    four times and calling it stable.
+
+    `extended=False` skips both. It does not hide that it skipped: the
+    two checks are still emitted, as NEEDS REVIEW, saying they were
+    turned off. Speed is a legitimate reason to skip them and not a
+    reason for the artefact to look like they passed.
+
+    `benchmark_bars` is a bar frame for `benchmark_ticker` (SPY by
+    default). Without it there is no buy-and-hold comparison, and that
+    absence is itself a NEEDS REVIEW -- the same treatment `AllSessions`
+    gets, and for the same reason: a missing comparison should be a
+    visible choice rather than a silent one.
     """
     th = thresholds or GateThresholds()
     provider = provider or AllSessions()
@@ -257,7 +350,7 @@ def run_gate(strategy, cfg: BacktestConfig, frames: dict[str, pd.DataFrame],
                             "no trades were produced; nothing can be judged",
                             integrity=True))
         return GateResult(name, Verdict.FAIL, checks, m, pd.DataFrame(),
-                          {}, th)
+                          {}, th, meta={"universe": diag})
     checks.append(Check("trades_exist", Verdict.PASS, len(t), "> 0",
                         f"{len(t):,} trades", integrity=True))
 
@@ -339,6 +432,58 @@ def run_gate(strategy, cfg: BacktestConfig, frames: dict[str, pd.DataFrame],
                             th.fail_cost_multiple, higher_is_worse=False,
                             detail=detail))
 
+    # ---- 4. parameter sensitivity ---------------------------------
+    # Runs after everything above, because it re-runs the entire path
+    # once per varied value and there is no point pricing the parameter
+    # neighbourhood of a strategy that already failed integrity.
+    build = config_factory or _default_config_factory(strategy)
+    sens: SensitivityResult | None = None
+    if not extended:
+        checks.append(_skipped("sensitivity_stability",
+                               "extended tests were turned off (extended=False)"))
+        checks.append(_skipped("sensitivity_spike",
+                               "extended tests were turned off (extended=False)"))
+    elif build is None:
+        why = ("no config_factory was given and the strategy cannot be "
+               "rebuilt from a config alone, so no parameter could be varied")
+        checks.append(_skipped("sensitivity_stability", why))
+        checks.append(_skipped("sensitivity_spike", why))
+    else:
+        try:
+            sens = parameter_sensitivity(cfg, frames, eligible, build, selection)
+            checks += _sensitivity_checks(sens, th)
+        except Exception as exc:  # noqa: BLE001
+            checks.append(_skipped("sensitivity_stability",
+                                   f"the sweep could not run: {exc}"))
+            checks.append(_skipped("sensitivity_spike",
+                                   f"the sweep could not run: {exc}"))
+
+    # ---- 5. benchmarks --------------------------------------------
+    bench: BenchmarkResult | None = None
+    if not extended:
+        checks.append(_skipped("benchmark_vs_index",
+                               "extended tests were turned off (extended=False)"))
+        checks.append(_skipped("benchmark_vs_longer_hold",
+                               "extended tests were turned off (extended=False)"))
+    elif build is None:
+        checks.append(_skipped("benchmark_vs_index",
+                               "no config_factory, so no comparison was run"))
+        checks.append(_skipped("benchmark_vs_longer_hold",
+                               "no config_factory, so the same signals could "
+                               "not be re-run with a longer hold"))
+    else:
+        try:
+            bench = compare(cfg, m, frames, eligible, build,
+                            benchmark_bars=benchmark_bars,
+                            benchmark_ticker=benchmark_ticker,
+                            selection=selection)
+            checks += _benchmark_checks(bench, th)
+        except Exception as exc:  # noqa: BLE001
+            checks.append(_skipped("benchmark_vs_index",
+                                   f"the comparison could not run: {exc}"))
+            checks.append(_skipped("benchmark_vs_longer_hold",
+                                   f"the comparison could not run: {exc}"))
+
     # ---- samples ----------------------------------------------------
     cols = [c for c in ("trade_id", "ticker", "date", "side", "entry_time",
                         "entry_price", "exit_price", "exit_reason", "pnl",
@@ -351,12 +496,151 @@ def run_gate(strategy, cfg: BacktestConfig, frames: dict[str, pd.DataFrame],
         "worst": t.nsmallest(k, "pnl_bps")[cols],
     }
 
+    # Precedence, and the reason integrity cannot be overridden: ANY
+    # failing check fails the run. There is no weighting, no scoring, and
+    # nothing a later stage can add that outvotes an earlier one.
     verdict = (Verdict.FAIL if any(c.verdict is Verdict.FAIL for c in checks)
                else Verdict.REVIEW if any(c.verdict is Verdict.REVIEW for c in checks)
                else Verdict.PASS)
     meta = {"universe": diag, "n_signals": len(signals),
-            "selection": selection.value}
-    return GateResult(name, verdict, checks, m, costs, samples, th, meta)
+            "selection": selection.value, "extended": extended,
+            "benchmark_ticker": benchmark_ticker}
+    return GateResult(name, verdict, checks, m, costs, samples, th,
+                      sensitivity=sens, benchmarks=bench, meta=meta)
+
+
+# ------------------------------------------------- sensitivity + benchmarks
+
+def _default_config_factory(strategy):
+    """`cfg -> StrategyBase`, or None if the strategy needs more than that.
+
+    Probing the constructor rather than assuming it. A strategy whose
+    `__init__` takes extra arguments cannot be rebuilt from a config
+    alone, and guessing would either crash inside the sweep or -- worse
+    -- construct something subtly different and report its numbers as the
+    strategy's own.
+    """
+    cls = type(strategy)
+    try:
+        import inspect
+        params = list(inspect.signature(cls.__init__).parameters.values())[1:]
+        required = [p for p in params
+                    if p.default is inspect.Parameter.empty
+                    and p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+        if len(required) != 1:
+            return None
+    except (TypeError, ValueError):
+        return None
+    return lambda cfg: cls(cfg)
+
+
+def _skipped(name: str, why: str) -> Check:
+    """A test that did not run is NEEDS REVIEW, never PASS.
+
+    The alternative -- omitting the row -- makes a skipped test and a
+    passed test look identical in the artefact, which is the failure mode
+    this whole module exists to prevent.
+    """
+    return Check(name, Verdict.REVIEW, "not run", "must run", why)
+
+
+def _sensitivity_checks(s: SensitivityResult, th: GateThresholds) -> list[Check]:
+    """Two questions: does the neighbourhood work, and is this a spike."""
+    if not s.n_variants:
+        why = ("no parameter could be varied: "
+               + "; ".join(f"{k} -- {v}" for k, v in s.skipped.items())
+               if s.skipped else "no parameter could be varied")
+        return [_skipped("sensitivity_stability", why),
+                _skipped("sensitivity_spike", why)]
+
+    if not s.n_binding:
+        why = (f"all {s.n_variants} variants returned the baseline result "
+               f"unchanged, so no parameter actually bound on this data. "
+               f"Stability measured this way means nothing -- a filter loose "
+               f"enough to be inert would pass it.")
+        return [_skipped("sensitivity_stability", why),
+                _skipped("sensitivity_spike", why)]
+
+    out = [_band(
+        "sensitivity_stability", s.share_profitable,
+        th.review_sensitivity_profitable_share,
+        th.fail_sensitivity_profitable_share, higher_is_worse=False,
+        detail=(f"{s.share_profitable:.0%} of {s.n_variants} nearby parameter "
+                f"settings are still profitable; neighbourhood median "
+                f"{s.median_neighbour_bps:,.2f} bps against a baseline "
+                f"{s.base_expectancy_bps:,.2f} bps"))]
+
+    if not np.isfinite(s.spike_ratio):
+        out.append(Check(
+            "sensitivity_spike", Verdict.REVIEW, None,
+            th.review_sensitivity_spike,
+            f"the neighbourhood median is {s.median_neighbour_bps:,.2f} bps, "
+            f"at or below zero, so the spike ratio is not computable. The "
+            f"baseline earning {s.base_expectancy_bps:,.2f} bps while its own "
+            f"neighbours do not is the finding."))
+    else:
+        out.append(_band(
+            "sensitivity_spike", s.spike_ratio, th.review_sensitivity_spike,
+            th.fail_sensitivity_spike, higher_is_worse=True,
+            detail=(f"the configured values earn {s.spike_ratio:,.2f}x the "
+                    f"median of their own neighbours "
+                    f"(1.0x would be a flat plateau)")))
+    return out
+
+
+def _benchmark_checks(b: BenchmarkResult, th: GateThresholds) -> list[Check]:
+    """Beating the index, and not being beaten by simply waiting longer."""
+    out: list[Check] = []
+    s_sharpe = float(b.strategy.get("sharpe", float("nan")))
+
+    if not b.index_available:
+        out.append(_skipped(
+            "benchmark_vs_index",
+            f"no {b.index_ticker} series was supplied, so the strategy was "
+            f"never compared with buying and holding the index"))
+    else:
+        row = b.table[b.table["kind"] == "buy_and_hold"].iloc[0]
+        margin = b.worst_sharpe_margin("buy_and_hold")
+        idle = float(b.strategy.get("pct_days_active") or float("nan"))
+        caveat = ("" if not np.isfinite(idle) or idle >= 0.5 else
+                  f"; the strategy is idle on {1 - idle:.0%} of sessions, so "
+                  f"this margin is flattered")
+        out.append(_band(
+            "benchmark_vs_index", margin, th.review_sharpe_margin_vs_index,
+            th.fail_sharpe_margin_vs_index, higher_is_worse=False,
+            detail=(f"Sharpe {s_sharpe:,.2f} vs {b.index_ticker} buy & hold "
+                    f"{float(row['sharpe']):,.2f} (margin {margin:+,.2f}); "
+                    f"max drawdown {float(b.strategy.get('max_dd') or 0):.1%} "
+                    f"vs {float(row['max_dd']):.1%}; total return "
+                    f"{float(b.strategy.get('total_return') or 0):.1%} vs "
+                    f"{float(row['total_return']):.1%}{caveat}")))
+
+    longer = b.table[b.table["kind"] == "longer_hold"]
+    if not len(longer):
+        out.append(_skipped("benchmark_vs_longer_hold",
+                            "no longer hold could be tested (the configured "
+                            "hold already reaches the session close)"))
+    else:
+        margin = b.worst_sharpe_margin("longer_hold")
+        best = longer.loc[longer["sharpe"].astype(float).idxmax()]
+        # REVIEW only, never FAIL. A longer hold winning does not make
+        # the edge fake -- it makes the chosen exit questionable, and
+        # that is a judgement for a human with the research in front of
+        # them, not an automatic rejection.
+        v = (Verdict.REVIEW
+             if (np.isfinite(margin) and margin < th.review_sharpe_margin_vs_longer_hold)
+             else Verdict.PASS if np.isfinite(margin) else Verdict.REVIEW)
+        out.append(Check(
+            "benchmark_vs_longer_hold", v, _r(margin),
+            th.review_sharpe_margin_vs_longer_hold,
+            (f"the configured hold has Sharpe {s_sharpe:,.2f}; the best longer "
+             f"hold tested ({best['benchmark']}) has {float(best['sharpe']):,.2f} "
+             f"(margin {margin:+,.2f}). "
+             + ("Holding the same names longer did better, so the exit is "
+                "doing work the entry filter is being credited with."
+                if np.isfinite(margin) and margin < th.review_sharpe_margin_vs_longer_hold
+                else "The configured hold is not beaten by simply waiting."))))
+    return out
 
 
 # ------------------------------------------------------------------ helpers

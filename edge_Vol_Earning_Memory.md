@@ -148,7 +148,7 @@ regime signal.**
 ## 5. Engine status and the reconciliation
 
 `backtester/` — steps 1–7 complete plus universe provider and validation
-gate. **159 assertions across seven suites.** See `WORKFLOW.md` and
+gate. **179 assertions across six suites.** See `WORKFLOW.md` and
 `LIMITATIONS.md` in that folder.
 
 ### What was reconciled against the research
@@ -178,11 +178,35 @@ event, plus an earnings calendar with BMO/AMC timing. Even 20 tickers
 over 2 years would unblock cohort reconciliation.
 
 ### The gate
-`--gate`, exit codes 0 PASS / 5 NEEDS REVIEW / 4 FAIL. Integrity checks
-(look-ahead, universe applied, trades exist) **cannot be outvoted by
-performance and have no override**. Thresholds live in
-`GateThresholds`, are printed with every verdict, and each check names
-what it compared against.
+`--gate`, exit codes 0 PASS / 5 NEEDS REVIEW / 4 FAIL. Five stages in a
+fixed order:
+
+```
+1 INTEGRITY → 2 ADEQUACY → 3 PERFORMANCE → 4 SENSITIVITY → 5 BENCHMARKS
+```
+
+Integrity checks (look-ahead, universe applied, trades exist) **cannot
+be outvoted by performance and have no override** — the verdict rule is
+"any failing check fails the run", with no weighting and no score.
+Thresholds live in `GateThresholds`, are printed with every verdict, and
+each check names what it compared against.
+
+**Stage 4, sensitivity.** `volume_ratio_min`, the doji threshold and
+`hold_minutes` each move ±10% / ±20%, with the **whole path re-run** —
+two of the three are signal filters, so a re-cost cannot see them.
+`spike_ratio = baseline ÷ median(neighbours)`; 1.0 is a plateau, above
+3.0 FAILS. NaN whenever the neighbourhood median is ≤ 0 (the recurring
+ratio trap). Variants that changed nothing are counted separately and
+earn no pass.
+
+**Stage 5, benchmarks.** SPY buy-and-hold priced over the strategy's own
+window, plus the identical signals held 2× and 4× longer (capped at the
+close). Losing to the index on Sharpe FAILS; being beaten by simply
+holding longer REVIEWS but never fails. **The Sharpe margin is
+structurally flattered** for a book idle 93% of the time — the detail
+line says so on the passing case, and nothing is silently adjusted.
+`--no-extended` skips both stages and the four checks still print, as
+NEEDS REVIEW, saying they were turned off.
 
 **Mandatory sequence:**
 ```
