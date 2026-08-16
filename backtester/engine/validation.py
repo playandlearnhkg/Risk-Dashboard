@@ -94,9 +94,10 @@ class ValidationReport:
     def side_by_side(self, group: dict[str, Metrics]) -> pd.DataFrame:
         keys = ["total_return", "cagr", "ann_vol", "sharpe", "max_dd",
                 "calmar", "n_trades", "win_rate", "expectancy_bps",
-                "payoff_ratio", "profit_factor"]
+                "expectancy_atr", "payoff_ratio", "profit_factor"]
         dkeys = ["median_bps", "p10", "p90", "skew_wins", "exkurt_wins",
-                 "pct_loss_gt_1atr", "mean_mae_atr", "mean_mfe_atr"]
+                 "pct_loss_gt_1atr", "pct_gain_gt_1atr", "mean_mae_atr",
+                 "mean_mfe_atr"]
         rows = []
         for label, m in group.items():
             rows.append({"variant": label,

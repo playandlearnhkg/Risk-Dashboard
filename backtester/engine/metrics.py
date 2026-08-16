@@ -34,6 +34,38 @@ FOUR DECISIONS WORTH KNOWING
   research a single squeeze took ordinary-session kurtosis from 56 to
   23,504 -- so the winsorised pair is the one to read, with the raw pair
   kept as the flag that an outlier exists.
+
+THE STANDARD METRIC SET
+
+Every field below is computed exactly once, here, and reused by the
+validation report, the gate and the robustness suite -- none of them
+recomputes a Sharpe or an expectancy independently, so there is only one
+place these numbers can disagree with each other.
+
+  Core performance    trade_stats()        n_trades, win_rate, avg_win,
+                                            avg_loss, payoff_ratio,
+                                            profit_factor, expectancy,
+                                            expectancy_bps, expectancy_atr
+  Risk & distribution  equity_stats()       ann_vol, max_dd, sharpe, calmar
+                       distribution_stats() std_bps, skew/exkurt (raw +
+                                            winsorised), p10/p25/p75/p90,
+                                            pct_loss_gt_0_5atr,
+                                            pct_loss_gt_1atr,
+                                            pct_gain_gt_1atr,
+                                            avg_large_loss_bps,
+                                            mean_mae_atr, mean_mfe_atr
+  Time & stability     evaluate()'s         by_year (return, max_dd,
+                       by_year / by_side    win_rate, avg trade,
+                                            pct_loss_gt_1atr) and by_side
+                                            (long vs short, each stat above)
+  Practical / cost     robustness.py        cost_stress, stop_comparison
+
+`expectancy_atr` is the mean of `ret_atr`, which -- like the tail counts
+above it -- is GROSS of cost. Cost expressed in ATR units is a few
+thousandths and adding it would claim a precision the data does not
+have; `expectancy_bps`, by contrast, IS net, because `pnl_bps` already
+has cost subtracted. Reading one as net and the other as gross is a
+feature of this data, not an inconsistency to fix.
 """
 
 from __future__ import annotations
@@ -165,12 +197,15 @@ def trade_stats(trades: pd.DataFrame) -> dict:
     if trades.empty:
         return {k: np.nan for k in
                 ("n_trades", "win_rate", "avg_win", "avg_loss", "payoff_ratio",
-                 "profit_factor", "expectancy", "expectancy_bps")}
+                 "profit_factor", "expectancy", "expectancy_bps",
+                 "expectancy_atr")}
     p = trades["pnl"]
     wins, losses = p[p > 0], p[p < 0]
     aw = float(wins.mean()) if len(wins) else np.nan
     al = float(-losses.mean()) if len(losses) else np.nan
     gl = float(-losses.sum())
+    # GROSS of cost, unlike expectancy_bps -- see the module docstring.
+    ratr = trades.get("ret_atr")
     return {
         "n_trades": int(len(trades)),
         "win_rate": float((p > 0).mean()),
@@ -179,6 +214,7 @@ def trade_stats(trades: pd.DataFrame) -> dict:
         "profit_factor": (float(wins.sum()) / gl) if gl else np.nan,
         "expectancy": float(p.mean()),
         "expectancy_bps": float(trades["pnl_bps"].mean()),
+        "expectancy_atr": float(ratr.mean()) if ratr is not None else np.nan,
     }
 
 
@@ -205,6 +241,7 @@ def distribution_stats(trades: pd.DataFrame) -> dict:
         "skew_wins": float(bw.skew()), "exkurt_wins": float(bw.kurt()),
         "pct_loss_gt_0_5atr": float((ratr < -0.5).mean()),
         "pct_loss_gt_1atr": float((ratr < -1.0).mean()),
+        "pct_gain_gt_1atr": float((ratr > 1.0).mean()),
         "avg_large_loss_bps": float(b[ratr < -1.0].mean())
         if (ratr < -1.0).any() else np.nan,
         "mean_mae_atr": float(trades["mae_atr"].mean()),
@@ -281,7 +318,8 @@ class Metrics:
              f"  avg win / loss  {num('avg_win')} / {num('avg_loss')}",
              f"  payoff ratio    {num('payoff_ratio')}",
              f"  profit factor   {num('profit_factor')}",
-             f"  expectancy      {num('expectancy')}  ({num('expectancy_bps')} bps)",
+             f"  expectancy      {num('expectancy')}  ({num('expectancy_bps')} bps, "
+             f"{num('expectancy_atr', 3)} ATR gross)",
              "",
              "DISTRIBUTION (bps per trade)",
              f"  p10 / p25       {num('p10')} / {num('p25')}",
@@ -291,8 +329,9 @@ class Metrics:
              f"  exkurt raw/wins {num('exkurt_raw', 3)} / {num('exkurt_wins', 3)}",
              "",
              "TAILS",
-             f"  losing > 0.5 ATR  {pct('pct_loss_gt_0_5atr')}",
-             f"  losing > 1.0 ATR  {pct('pct_loss_gt_1atr')}",
+             f"  losing  > 0.5 ATR  {pct('pct_loss_gt_0_5atr')}",
+             f"  losing  > 1.0 ATR  {pct('pct_loss_gt_1atr')}",
+             f"  gaining > 1.0 ATR  {pct('pct_gain_gt_1atr')}",
              f"  avg large loss    {num('avg_large_loss_bps')} bps",
              f"  mean MAE / MFE    {num('mean_mae_atr', 3)} / "
              f"{num('mean_mfe_atr', 3)} ATR"]

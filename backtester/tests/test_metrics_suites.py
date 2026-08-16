@@ -121,6 +121,20 @@ def t_profit_factor_no_losses():
     assert np.isnan(s["profit_factor"]), "no losses means no finite ratio"
 
 
+def t_expectancy_atr_is_gross_mean_of_ret_atr():
+    t = toy([100, 200, 300, -50, -150])
+    t["ret_atr"] = [1.0, 2.0, 3.0, -0.5, -1.5]
+    s = M.trade_stats(t)
+    assert abs(s["expectancy_atr"] - 0.8) < 1e-12          # 4.0 / 5
+
+
+def t_expectancy_atr_is_nan_without_ret_atr():
+    """A pre-standardised frame lacking ret_atr must not raise or fabricate."""
+    t = toy([10, 20]).drop(columns="ret_atr")
+    s = M.trade_stats(t)
+    assert np.isnan(s["expectancy_atr"])
+
+
 def t_distribution_percentiles_and_winsor():
     """One extreme value must move raw kurtosis and not the winsorised one."""
     base = list(np.linspace(-100, 100, 200))
@@ -138,6 +152,14 @@ def t_tail_counts_use_atr():
     d = M.distribution_stats(t)
     assert abs(d["pct_loss_gt_0_5atr"] - 0.5) < 1e-12    # -0.6 and -1.2
     assert abs(d["pct_loss_gt_1atr"] - 0.25) < 1e-12     # -1.2 only
+
+
+def t_gain_tail_counts_use_atr():
+    """The gain side of the same tail count, symmetric with the loss side."""
+    t = toy([0, 0, 0, 0, 0])
+    t["ret_atr"] = [-1.2, 0.9, 1.1, 2.4, 0.4]
+    d = M.distribution_stats(t)
+    assert abs(d["pct_gain_gt_1atr"] - 0.4) < 1e-12      # 1.1 and 2.4 of 5
 
 
 def t_rebuild_equity_compounds_by_day():
@@ -220,6 +242,21 @@ def t_metrics_reconciles_with_portfolio():
     m = M.evaluate(log, CAPITAL, "core", equity=curve)
     assert abs(curve.iloc[-1] - (CAPITAL + m.trades["pnl"].sum())) < 1e-6
     assert m.overall["n_trades"] == len(log)
+
+
+def t_standard_metric_set_reaches_the_summary_text():
+    """The two newest fields must not be computed and then dropped on the
+    way to what a human actually reads."""
+    t = toy([100, 200, 300, -50, -150])
+    t["ret_atr"] = [1.0, 2.0, 3.0, -0.5, -1.5]
+    m = M.evaluate(t, CAPITAL, "standard-set")
+    for k in ("expectancy_atr",):
+        assert k in m.overall, k
+    for k in ("pct_gain_gt_1atr",):
+        assert k in m.distribution, k
+    txt = m.summary()
+    assert "ATR gross" in txt
+    assert "gaining > 1.0 ATR" in txt
 
 
 # --------------------------------------------------------------- robustness
@@ -472,6 +509,15 @@ def t_validation_summary_and_write():
         written = rep.write(d)
         assert any(p.name == "validation_summary.txt" for p in written)
         assert any("side_by_side" in p.name for p in written)
+
+
+def t_validation_side_by_side_carries_the_standard_set():
+    cfg, sigs, frames = _suite_inputs()
+    rep = VAL.run(cfg, sigs, frames, costs=[6.6], out_dir=None,
+                  make_plots=False)
+    sbs = rep.side_by_side(rep.variants)
+    for col in ("expectancy_atr", "pct_gain_gt_1atr"):
+        assert col in sbs.columns, col
 
 
 def main() -> int:
