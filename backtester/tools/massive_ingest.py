@@ -73,7 +73,16 @@ def _key() -> str:
 
 def _curl(url: str, dest: Path | None, *, timeout: int,
           header_auth: bool) -> tuple[str, bytes]:
-    """One curl through the CONNECT tunnel. Returns (http_code, body).
+    """One curl call. Returns (http_code, body).
+
+    A proxy is used ONLY if HTTPS_PROXY/https_proxy is set in the
+    environment -- true inside Anthropic's sandboxed cloud sessions,
+    where egress is CONNECT-only and a direct request is refused. On an
+    ordinary machine (a local terminal, a teleported session) there is
+    normally no such variable, and curl reaches the host directly. This
+    branch is what makes the tool portable between the two: adding a
+    proxy requirement here would work in the sandbox and silently break
+    on every laptop.
 
     header_auth=True sends the key as X-API-Key (preferred: keeps it out
     of the URL). Some deployments only read the `apiKey` query parameter
@@ -81,10 +90,9 @@ def _curl(url: str, dest: Path | None, *, timeout: int,
     URL itself. The key is NEVER interpolated into a log line either way.
     """
     proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-    if not proxy:
-        raise IngestError("HTTPS_PROXY is not set; cannot reach the service")
-    cmd = ["curl", "-sS", "--proxytunnel", "--proxy", proxy,
-           "--max-time", str(timeout), "-w", "%{http_code}"]
+    cmd = ["curl", "-sS", "--max-time", str(timeout), "-w", "%{http_code}"]
+    if proxy:
+        cmd[1:1] = ["--proxytunnel", "--proxy", proxy]
     if header_auth:
         cmd += ["-H", f"X-API-Key: {_key()}"]
     if dest is not None:
