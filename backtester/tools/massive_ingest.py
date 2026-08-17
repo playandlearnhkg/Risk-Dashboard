@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import io
+import json
 import os
 import subprocess
 import sys
@@ -70,31 +71,42 @@ def _key() -> str:
     return k
 
 
-def fetch(path: str, dest: Path, *, timeout: int = 600) -> Path:
-    """GET BASE+path through the CONNECT tunnel, save the raw body to dest.
+def _curl(url: str, dest: Path | None, *, timeout: int,
+          header_auth: bool) -> tuple[str, bytes]:
+    """One curl through the CONNECT tunnel. Returns (http_code, body).
 
-    The key rides in an X-API-Key header so it never enters the URL. The
-    proxy is whatever HTTPS_PROXY points at; --proxytunnel forces a
-    CONNECT even for an http:// origin, which is the only method this
-    egress accepts.
+    header_auth=True sends the key as X-API-Key (preferred: keeps it out
+    of the URL). Some deployments only read the `apiKey` query parameter
+    -- for those the caller sets header_auth=False and puts apiKey in the
+    URL itself. The key is NEVER interpolated into a log line either way.
     """
     proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
     if not proxy:
         raise IngestError("HTTPS_PROXY is not set; cannot reach the service")
-    url = f"{BASE}{path}"
-    dest.parent.mkdir(parents=True, exist_ok=True)
     cmd = ["curl", "-sS", "--proxytunnel", "--proxy", proxy,
-           "--max-time", str(timeout), "-H", f"X-API-Key: {_key()}",
-           "-w", "%{http_code}", "-o", str(dest), url]
+           "--max-time", str(timeout), "-w", "%{http_code}"]
+    if header_auth:
+        cmd += ["-H", f"X-API-Key: {_key()}"]
+    if dest is not None:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        cmd += ["-o", str(dest)]
+    cmd.append(url)
     out = subprocess.run(cmd, capture_output=True, text=True)
     if out.returncode != 0:
-        raise IngestError(f"curl failed for {path}: {out.stderr.strip()}")
-    code = out.stdout.strip()[-3:]
+        raise IngestError(f"curl failed: {out.stderr.strip()}")
+    code = out.stdout.strip()[-3:] if dest is not None else out.stdout[-3:]
+    body = (dest.read_bytes() if (dest and dest.exists())
+            else out.stdout[:-3].encode())
+    return code, body
+
+
+def fetch(path: str, dest: Path, *, timeout: int = 600,
+          header_auth: bool = True) -> Path:
+    """GET BASE+path through the tunnel, save the raw body to dest."""
+    code, body = _curl(f"{BASE}{path}", dest, timeout=timeout,
+                       header_auth=header_auth)
     if code != "200":
-        body = dest.read_bytes()[:200] if dest.exists() else b""
-        # Surface the server's own message (e.g. an auth error) but never
-        # the request that carried the key.
-        raise IngestError(f"{path} returned HTTP {code}: {body!r}")
+        raise IngestError(f"{path} returned HTTP {code}: {body[:200]!r}")
     return dest
 
 
@@ -116,36 +128,65 @@ def _read_flatfile(raw: Path) -> pd.DataFrame:
     return df
 
 
+def _epoch_to_utc(values: pd.Series) -> pd.DatetimeIndex:
+    """Integer epoch -> tz-aware UTC index, unit inferred from magnitude.
+
+    The flat files stamp nanoseconds; the REST API stamps milliseconds.
+    Rather than trust the caller to know which, the unit is inferred from
+    the size of a representative value and then the decoded YEAR is
+    checked. A wrong guess lands in 1970 or the far future and raises,
+    so a mislabelled epoch can never be written to a parquet silently.
+    """
+    v = pd.to_numeric(values, errors="coerce")
+    if v.isna().any():
+        raise IngestError("timestamp column has non-numeric values")
+    mag = int(abs(v.dropna().iloc[0]))
+    unit = ("ns" if mag >= 10**17 else "us" if mag >= 10**14
+            else "ms" if mag >= 10**11 else "s")
+    ts = pd.to_datetime(v.astype("int64"), unit=unit, utc=True)
+    yr = ts.dt.year
+    if yr.min() < 1990 or yr.max() > 2100:
+        raise IngestError(
+            f"timestamp decoded to years {yr.min()}..{yr.max()} as {unit!r}; "
+            f"that epoch unit is wrong. Refusing to write a frame stamped in "
+            f"the wrong epoch -- inspect the raw values with --probe.")
+    return pd.DatetimeIndex(ts, name="ts")
+
+
+def _finalise(ts: pd.DatetimeIndex, cols: dict) -> pd.DataFrame:
+    out = pd.DataFrame({c: pd.to_numeric(cols[c], errors="coerce")
+                        for c in OHLCV}).set_axis(ts)
+    out = out[~out.index.duplicated(keep="last")].sort_index()
+    return out.astype("float64")
+
+
 def to_engine_frame(df: pd.DataFrame, ticker: str | None = None
                     ) -> pd.DataFrame:
-    """Flat-file rows -> the engine's UTC-indexed OHLCV frame.
-
-    window_start is treated as Unix NANOSECONDS UTC. If a value looks
-    like seconds or milliseconds instead (out by 10^9 / 10^6), the year
-    lands in 1970 or the far future and this raises rather than writing a
-    frame stamped in the wrong epoch.
-    """
+    """Flat-file rows -> the engine's UTC-indexed OHLCV frame."""
     if ticker is not None and "ticker" in df.columns:
         df = df[df["ticker"].astype(str).str.upper() == ticker.upper()]
         if df.empty:
             raise IngestError(f"no rows for {ticker} in this file")
+    ts = _epoch_to_utc(df["window_start"])
+    return _finalise(ts, {c: df[c] for c in OHLCV})
 
-    ws = pd.to_numeric(df["window_start"], errors="coerce")
-    if ws.isna().any():
-        raise IngestError("window_start has non-numeric values")
-    ts = pd.to_datetime(ws.astype("int64"), unit="ns", utc=True)
-    yr = ts.dt.year
-    if yr.min() < 1990 or yr.max() > 2100:
-        raise IngestError(
-            f"window_start decoded to years {yr.min()}..{yr.max()} as ns; "
-            f"it is probably not nanoseconds. Refusing to write a frame in "
-            f"the wrong epoch -- re-check the unit with --probe.")
 
-    out = (pd.DataFrame({c: pd.to_numeric(df[c], errors="coerce")
-                         for c in OHLCV})
-           .set_axis(pd.DatetimeIndex(ts, name="ts")))
-    out = out[~out.index.duplicated(keep="last")].sort_index()
-    return out.astype("float64")
+def rest_results_to_engine(results: list[dict]) -> pd.DataFrame:
+    """Polygon-style aggregates JSON `results` -> engine frame.
+
+    Field names are the Polygon short forms: t (epoch ms), o/h/l/c, v.
+    """
+    if not results:
+        raise IngestError("the aggregates response had an empty results list")
+    df = pd.DataFrame(results)
+    need = {"t", "o", "h", "l", "c", "v"}
+    missing = need - set(df.columns)
+    if missing:
+        raise IngestError(f"aggregates rows missing {sorted(missing)}; got "
+                          f"{list(df.columns)}")
+    ts = _epoch_to_utc(df["t"])
+    return _finalise(ts, {"open": df["o"], "high": df["h"], "low": df["l"],
+                          "close": df["c"], "volume": df["v"]})
 
 
 # ------------------------------------------------------------------- probe
@@ -232,6 +273,53 @@ def ingest_day(date: str, out_dir: Path, tickers: set[str] | None = None
     return frames
 
 
+def rest_aggregates(ticker: str, start: str, end: str, *,
+                    timespan: str = "minute", multiplier: int = 1,
+                    limit: int = 50000, header_auth: bool = True,
+                    max_pages: int = 200) -> pd.DataFrame:
+    """Pull /v2/aggs for one ticker over [start, end], following next_url.
+
+    This is the right route for a BOUNDED per-ticker pull (the ack-test):
+    one HTTP call per <=`limit` bars. For full multi-year minute history
+    the per-ticker flat file is cheaper -- millions of rows would page
+    dozens of times here.
+    """
+    path = (f"/v2/aggs/ticker/{ticker.upper()}/range/{multiplier}/"
+            f"{timespan}/{start}/{end}")
+    q = f"adjusted=true&sort=asc&limit={limit}"
+    # apiKey in the query only when the deployment needs it there; the
+    # default keeps the key in the header instead.
+    first = f"{BASE}{path}?{q}" + ("" if header_auth
+                                   else f"&apiKey={_key()}")
+    rows: list[dict] = []
+    url, pages = first, 0
+    while url and pages < max_pages:
+        code, body = _curl(url, None, timeout=300, header_auth=header_auth)
+        if code != "200":
+            raise IngestError(f"aggregates HTTP {code}: {body[:200]!r}")
+        payload = json.loads(body.decode() or "{}")
+        rows.extend(payload.get("results") or [])
+        nxt = payload.get("next_url")
+        if not nxt:
+            break
+        # next_url is absolute and already carries the cursor; re-attach
+        # the key the same way the first call did.
+        url = nxt if header_auth else (
+            nxt + ("&" if "?" in nxt else "?") + f"apiKey={_key()}")
+        pages += 1
+    return rest_results_to_engine(rows)
+
+
+def ingest_ticker_rest(ticker: str, start: str, end: str, out_dir: Path,
+                       header_auth: bool = True) -> Path:
+    eng = rest_aggregates(ticker, start, end, header_auth=header_auth)
+    dest = out_dir / _parquet_name(ticker, eng.index)
+    eng.to_parquet(dest)
+    print(f"wrote {dest.name}  ({len(eng):,} bars, "
+          f"{eng.index.min()}..{eng.index.max()})")
+    return dest
+
+
 def fetch_reference(path: str, dest: Path) -> Path:
     """Earnings calendar / market caps: save whatever the service returns
     (JSON or CSV) for inspection, since their exact shape is unconfirmed
@@ -251,10 +339,19 @@ def main() -> int:
     ap.add_argument("--probe", metavar="PATH",
                     help="fetch one file and report schema+timezone, "
                          "e.g. /stocks/minute-aggregates/AAPL.csv.gz")
-    ap.add_argument("--ticker", help="ingest one ticker's full history")
+    ap.add_argument("--ticker", help="ingest one ticker's full history "
+                    "from the per-ticker flat file")
     ap.add_argument("--ticker-path",
                     help="override the per-ticker path if the service "
                          "names it differently")
+    ap.add_argument("--rest-ticker", metavar="TICKER",
+                    help="ingest one ticker over a date range via the "
+                         "/v2/aggs REST API (needs --start and --end)")
+    ap.add_argument("--start", help="YYYY-MM-DD for --rest-ticker")
+    ap.add_argument("--end", help="YYYY-MM-DD for --rest-ticker")
+    ap.add_argument("--query-key", action="store_true",
+                    help="send the key as ?apiKey=... instead of the "
+                         "X-API-Key header (matches the working REST call)")
     ap.add_argument("--reference", metavar="PATH",
                     help="fetch an earnings/market-cap endpoint verbatim "
                          "for inspection")
@@ -263,15 +360,22 @@ def main() -> int:
     a = ap.parse_args()
 
     try:
+        ha = not a.query_key
         if a.probe:
             probe(a.probe, a.out)
+        elif a.rest_ticker:
+            if not (a.start and a.end):
+                ap.error("--rest-ticker needs --start and --end")
+            ingest_ticker_rest(a.rest_ticker, a.start, a.end, a.out,
+                               header_auth=ha)
         elif a.ticker:
             ingest_ticker(a.ticker, a.out, a.ticker_path)
         elif a.reference:
             dest = a.reference_out or (a.out / "reference_dump")
             fetch_reference(a.reference, dest)
         else:
-            ap.error("nothing to do: pass --probe, --ticker or --reference")
+            ap.error("nothing to do: pass --probe, --ticker, "
+                     "--rest-ticker or --reference")
     except IngestError as exc:
         print(f"INGEST ERROR  {exc}", file=sys.stderr)
         return 2
