@@ -30,6 +30,7 @@ import streamlit as st
 
 import config
 import data_sources as ds
+import data_sources_panel
 import margin_debt as mdbt
 import metrics as mx
 import scoring
@@ -50,12 +51,14 @@ st.set_page_config(
 # SIDEBAR
 # ===========================================================================
 
-def render_sidebar(seeds: dict) -> dict:
+def render_sidebar(seeds: dict, md=None) -> dict:
     """
     Draw the sidebar and return the manual-input overrides it collected.
 
     `seeds` comes from ds.jp_rate_seeds() — the latest FRED monthly Japanese
     values, so the inputs open with something real instead of a stale constant.
+    `md` is passed through to the data-sources panel so it can report feed
+    health without making any additional network calls.
     """
     with st.sidebar:
         st.markdown("### How to use this dashboard")
@@ -135,6 +138,10 @@ This is a monitoring tool, not a trading signal. It tells you when the
         st.divider()
 
         # -- Weights ---------------------------------------------------------
+        st.divider()
+        data_sources_panel.render(md, in_sidebar=True)
+
+        st.divider()
         st.markdown("### Risk model weights")
         st.caption(
             "Change what the composite cares about. Defaults live in "
@@ -1204,7 +1211,7 @@ def main() -> None:
             st.rerun()
         return
 
-    manual = render_sidebar(ds.jp_rate_seeds(md))
+    manual = render_sidebar(ds.jp_rate_seeds(md), md=md)
     window = manual["_window"]
     weights = manual["_weights"]
 
