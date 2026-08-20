@@ -1,0 +1,34 @@
+# Streamlit configuration for the Systematic Risk Macro Dashboard.
+#
+# Dark is the default here purely as a preference — change `base` to "light"
+# (and the three colours below) if you prefer, or switch at any time from the
+# app's ☰ menu → Settings → Appearance.
+#
+# Either way the dashboard renders correctly: cards inherit the theme's own
+# text colour over a neutral translucent tint, and the chart palette is
+# mode-invariant, so nothing has to detect which theme is active. See the
+# comment on PALETTE in config.py for why that matters.
+
+[theme]
+base = "dark"
+primaryColor = "#3987e5"            # categorical slot 1 — buttons, focus rings
+backgroundColor = "#0d0d0d"         # page plane
+secondaryBackgroundColor = "#1a1a19" # card / sidebar surface
+textColor = "#ffffff"
+font = "sans serif"
+
+[server]
+# Set to true if you want the app reachable from other devices on your LAN.
+# Overridden by --server.address on the command line.
+headless = true
+# Uploaded CSVs are tiny; no need for the 200MB default.
+maxUploadSize = 5
+
+[browser]
+# Turn off usage statistics collection.
+gatherUsageStats = false
+
+[client]
+# Show errors in the browser rather than only in the terminal — useful when
+# you are checking the dashboard from a phone and cannot see the console.
+showErrorDetails = true

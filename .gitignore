@@ -1,0 +1,13 @@
+# Python virtual environment
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Your private watchlist notes — remove this line if you WANT them synced
+# across machines via git (they contain whatever you typed on that tab).
+data/watchlist.json
+
+# OS noise
+.DS_Store
+Thumbs.db
