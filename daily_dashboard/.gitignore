@@ -1,0 +1,20 @@
+# secrets
+.env
+
+# local database and caches
+cache/*.db
+cache/*.db-wal
+cache/*.db-shm
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# generated artifacts
+output/*.json
+output/*.csv
+output/*.log
+
+# keep the directories themselves
+!cache/.gitkeep
+!output/.gitkeep

@@ -1,0 +1,19 @@
+# Meridian Capital Partners — Layers 0 and 1
+# Install:  pip install -r requirements.txt
+
+# --- core ---
+pandas>=2.0.0
+numpy>=1.24.0
+PyYAML>=6.0                # config.yaml
+requests>=2.31.0
+
+# --- market and macro data ---
+yfinance>=0.2.40           # default market-data provider (free, no key)
+pandas-datareader>=0.10.0  # FRED macro series
+lxml>=4.9.0                # Wikipedia S&P 500 scrape + SEC XML parsing
+html5lib>=1.1              # pandas.read_html fallback parser
+beautifulsoup4>=4.12.0     # SEC filing section extraction
+openpyxl>=3.1.0            # FINRA margin-statistics spreadsheet
+
+# --- optional providers (safe to omit; code degrades gracefully) ---
+# alpaca-py>=0.20.0        # Layer 6 execution

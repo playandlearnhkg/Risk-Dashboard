@@ -1,0 +1,522 @@
+# =============================================================================
+# MERIDIAN CAPITAL PARTNERS — master configuration
+# =============================================================================
+# Every tunable in the system lives here. Code reads this file; it does not
+# hardcode thresholds. If you want to change how the system behaves, this is
+# the file you edit.
+#
+# THE GOVERNING MODEL
+#   Capital Availability = Money Available x Risk-on / Risk-off Behavior
+#
+# Money and behaviour are scored separately (0-100 each) and then COMBINED
+# MULTIPLICATIVELY, because the model is a product, not a sum: abundant money
+# sitting in a risk-off posture is not available capital, and eager risk
+# appetite with no money behind it cannot bid. Either term near zero should
+# drag the result toward zero, and a sum cannot express that.
+# =============================================================================
+
+project:
+  name: Meridian Capital Partners
+  short_name: meridian
+  base_currency: USD
+  timezone: America/New_York
+
+paths:
+  database: cache/meridian.db
+  cache_dir: cache
+  output_dir: output
+  # Reuses the FINRA margin data maintained by the parent risk-dashboard app,
+  # so there is one copy of that series in the repo, not two that drift.
+  margin_debt_csv: ../data/margin_debt.csv
+
+logging:
+  level: INFO
+  file: output/meridian.log
+
+# =============================================================================
+# LAYER 0 — CAPITAL & REGIME ENGINE
+# =============================================================================
+regime:
+
+  # --- How the two halves of the core model combine -------------------------
+  # geometric : sqrt(money x behavior). The default. Multiplicative in spirit
+  #             (a zero in either term zeroes the result) while keeping the
+  #             output on a readable 0-100 scale, and it penalises imbalance,
+  #             which is the point of the model.
+  # product   : (money/100) x (behavior/100) x 100. Purest reading of the
+  #             formula, but compresses everything downward -- two neutral 50s
+  #             produce 25, which reads as risk-off when it is not.
+  # weighted  : money_weight/behavior_weight blend. Additive escape hatch;
+  #             use only if you deliberately want one term to stand in for the
+  #             other when data is missing.
+  combination_method: geometric
+  money_weight: 0.50        # used only when combination_method is 'weighted'
+  behavior_weight: 0.50
+
+  # --- Composite score -> regime label --------------------------------------
+  # Bands are asymmetric on purpose. Risk-off arrives faster than risk-on, so
+  # the two outer bands are narrower than the middle: the system should change
+  # posture quickly on deterioration and slowly on improvement.
+  labels:
+    strong_risk_on:  {min: 70, max: 101, name: "Strong Risk-On"}
+    mild_risk_on:    {min: 57, max: 70,  name: "Mild Risk-On"}
+    neutral:         {min: 43, max: 57,  name: "Neutral"}
+    mild_risk_off:   {min: 30, max: 43,  name: "Mild Risk-Off"}
+    strong_risk_off: {min: -1, max: 30,  name: "Strong Risk-Off"}
+
+  # --- Capital availability status ------------------------------------------
+  # Driven by the MONEY half alone, not the composite. Money availability and
+  # risk appetite are different questions and the system should be able to say
+  # "plenty of money, but nobody wants risk" -- which is the classic setup for
+  # a violent rally once behaviour turns.
+  capital_status:
+    high_above: 62
+    medium_above: 38
+
+  # -------------------------------------------------------------------------
+  # MONEY AVAILABILITY INDICATORS
+  # -------------------------------------------------------------------------
+  # Each indicator is scored 0-100 where 100 = most money available.
+  # 'direction: up' means a higher raw value means more money available.
+  # 'method: percentile' ranks the latest value in its own trailing history,
+  # which makes indicators with no natural absolute scale comparable.
+  # 'method: ramp' maps between two absolute thresholds (calm/stress style).
+  money:
+    lookback_years: 5
+    indicators:
+
+      mmf_aum:
+        enabled: true
+        weight: 0.25
+        source: fred
+        series: MMMFFAQ027S          # MMF total financial assets, quarterly
+        fallback_series: RMFSL       # retail MMF, monthly, if the above stalls
+        method: percentile
+        direction: up
+        # Money sitting in money-market funds is dry powder. Rising MMF AUM
+        # means capital exists but is parked; it is fuel, not yet flow. The
+        # regime engine reads a LARGE and GROWING MMF balance as high money
+        # availability, and leaves it to the behaviour half to decide whether
+        # that money is actually being deployed.
+        note: "Dry powder parked in money funds"
+
+      reverse_repo:
+        enabled: true
+        weight: 0.20
+        source: fred
+        series: RRPONTSYD            # overnight RRP, DAILY, in $bn
+        units_billions: true
+        method: percentile
+        direction: down
+        # RRP is the opposite reading of the same idea: cash sitting AT the
+        # Fed is cash withdrawn from markets. A drained RRP facility means
+        # that buffer has already been released into the system -- supportive
+        # while it lasts, but it also means the cushion is spent.
+        note: "Cash parked at the Fed; draining = liquidity released"
+
+      margin_debt:
+        enabled: true
+        weight: 0.20
+        source: finra_csv            # from paths.margin_debt_csv
+        method: yoy_ramp
+        direction: up
+        # Margin debt is borrowed buying power -- money availability in its
+        # most leveraged form. Scored on YoY growth, not level.
+        # NOTE the deliberate tension with Layer 5: rising margin debt RAISES
+        # money availability here while RAISING fragility in the risk layer.
+        # That is correct and intentional. Leverage genuinely does add buying
+        # power on the way up and genuinely does amplify the way down; the
+        # system should hold both facts at once rather than average them away.
+        calm: -5.0                   # YoY % at which score = 0
+        stress: 35.0                 # YoY % at which score = 100
+        note: "Borrowed buying power (raises money AND fragility)"
+
+      net_liquidity:
+        enabled: true
+        weight: 0.25
+        source: fred_composite
+        # Net liquidity = Fed balance sheet - Treasury General Account - RRP.
+        # The standard proxy for how much central-bank money is actually
+        # circulating in markets rather than sitting immobilised at the Fed
+        # or in the Treasury's account.
+        components:
+          balance_sheet: WALCL       # $mn, weekly
+          tga: WTREGEN               # $mn, weekly
+          rrp: RRPONTSYD             # $bn, daily -- rescaled in code
+        method: trend_percentile
+        direction: up
+        trend_days: 90
+        note: "Fed assets minus TGA minus RRP"
+
+      financial_conditions:
+        enabled: true
+        weight: 0.10
+        source: fred
+        series: NFCI                 # Chicago Fed NFCI; negative = loose
+        method: percentile
+        direction: down              # lower NFCI = looser = more money
+        note: "Chicago Fed National Financial Conditions Index"
+
+  # -------------------------------------------------------------------------
+  # RISK-ON / RISK-OFF BEHAVIOUR INDICATORS
+  # -------------------------------------------------------------------------
+  # Each scored 0-100 where 100 = maximum risk-ON behaviour.
+  behavior:
+    lookback_years: 3
+    indicators:
+
+      vix_level:
+        enabled: true
+        weight: 0.22
+        source: yahoo
+        ticker: "^VIX"
+        fallback_source: fred
+        fallback_series: VIXCLS
+        method: ramp
+        direction: down              # low VIX = risk-on
+        risk_on_at: 13.0             # score 100 at or below
+        risk_off_at: 30.0            # score 0 at or above
+        note: "Implied equity volatility"
+
+      vix_term_structure:
+        enabled: true
+        weight: 0.13
+        source: yahoo_ratio
+        numerator: "^VIX"
+        denominator: "^VIX3M"
+        method: ramp
+        direction: down
+        risk_on_at: 0.85             # deep contango = calm
+        risk_off_at: 1.05            # backwardation = acute stress
+        # Term structure beats level: a VIX of 20 in contango is a market
+        # pricing normal uncertainty; a VIX of 20 in backwardation is a
+        # market pricing something breaking this month.
+        note: "VIX / VIX3M -- above 1.0 is backwardation"
+
+      hy_credit_spread:
+        enabled: true
+        weight: 0.25
+        source: fred
+        series: BAMLH0A0HYM2
+        method: ramp
+        direction: down              # tight spreads = risk-on
+        risk_on_at: 3.0
+        risk_off_at: 6.5
+        # Weighted highest of the behaviour set. Credit reprices risk before
+        # equities do, and unlike VIX it cannot be suppressed by systematic
+        # option selling.
+        note: "ICE BofA US High Yield OAS"
+
+      copper_gold_ratio:
+        enabled: true
+        weight: 0.15
+        source: yahoo_ratio
+        numerator: "HG=F"
+        denominator: "GC=F"
+        method: trend_percentile
+        direction: up                # copper outperforming = growth appetite
+        trend_days: 60
+        note: "Industrial growth demand vs safe haven"
+
+      audjpy:
+        enabled: true
+        weight: 0.15
+        source: yahoo
+        ticker: "AUDJPY=X"
+        method: trend_percentile
+        direction: up                # rising = carry appetite intact
+        trend_days: 60
+        # The cleanest single read on global carry appetite: long a
+        # commodity/growth currency, funded in the world's funding currency.
+        note: "Carry-trade appetite proxy"
+
+      high_beta_vs_defensive:
+        enabled: true
+        weight: 0.10
+        source: yahoo_ratio
+        numerator: SPHB              # S&P 500 High Beta
+        denominator: SPLV            # S&P 500 Low Volatility
+        fallback_numerator: XLY      # discretionary
+        fallback_denominator: XLP    # staples
+        method: trend_percentile
+        direction: up
+        trend_days: 60
+        note: "High-beta vs low-vol leadership"
+
+  # -------------------------------------------------------------------------
+  # REGIME-CONDITIONAL FACTOR WEIGHT MULTIPLIERS  (consumed by Layer 2)
+  # -------------------------------------------------------------------------
+  # Multipliers applied to Layer 2's base factor weights, then renormalised.
+  # The logic: momentum works when liquidity is abundant and trends persist;
+  # quality and value work when money is scarce and balance sheets matter.
+  factor_multipliers:
+    strong_risk_on:
+      momentum: 1.40
+      growth: 1.30
+      value: 0.70
+      quality: 0.75
+      revisions: 1.15
+      insider: 1.00
+      short_interest: 0.90
+      institutional: 1.00
+    mild_risk_on:
+      momentum: 1.20
+      growth: 1.15
+      value: 0.85
+      quality: 0.90
+      revisions: 1.10
+      insider: 1.00
+      short_interest: 0.95
+      institutional: 1.00
+    neutral:
+      momentum: 1.00
+      growth: 1.00
+      value: 1.00
+      quality: 1.00
+      revisions: 1.00
+      insider: 1.00
+      short_interest: 1.00
+      institutional: 1.00
+    mild_risk_off:
+      momentum: 0.80
+      growth: 0.85
+      value: 1.15
+      quality: 1.25
+      revisions: 0.95
+      insider: 1.10
+      short_interest: 1.05
+      institutional: 1.00
+    strong_risk_off:
+      momentum: 0.55
+      growth: 0.70
+      value: 1.30
+      quality: 1.50
+      revisions: 0.85
+      insider: 1.20
+      short_interest: 1.15
+      institutional: 1.00
+
+  # -------------------------------------------------------------------------
+  # ASSET CLASS PREFERENCE MATRIX
+  # -------------------------------------------------------------------------
+  # Score -2 (strong underweight) .. +2 (strong overweight) per regime.
+  # Derived from standard macro-cycle positioning: risk assets and cyclicals
+  # lead when capital is abundant and appetite is high; duration, cash and
+  # gold lead when it is not.
+  asset_class_matrix:
+    classes:
+      us_equity:        {strong_risk_on:  2, mild_risk_on:  1, neutral:  0, mild_risk_off: -1, strong_risk_off: -2}
+      intl_dev_equity:  {strong_risk_on:  2, mild_risk_on:  1, neutral:  0, mild_risk_off: -1, strong_risk_off: -2}
+      em_equity:        {strong_risk_on:  2, mild_risk_on:  1, neutral:  0, mild_risk_off: -2, strong_risk_off: -2}
+      hy_credit:        {strong_risk_on:  2, mild_risk_on:  1, neutral:  0, mild_risk_off: -1, strong_risk_off: -2}
+      ig_credit:        {strong_risk_on:  0, mild_risk_on:  1, neutral:  1, mild_risk_off:  1, strong_risk_off:  0}
+      long_treasuries:  {strong_risk_on: -1, mild_risk_on: -1, neutral:  0, mild_risk_off:  1, strong_risk_off:  2}
+      short_treasuries: {strong_risk_on: -1, mild_risk_on:  0, neutral:  0, mild_risk_off:  1, strong_risk_off:  2}
+      gold:             {strong_risk_on: -1, mild_risk_on:  0, neutral:  0, mild_risk_off:  1, strong_risk_off:  2}
+      broad_commodity:  {strong_risk_on:  1, mild_risk_on:  1, neutral:  0, mild_risk_off:  0, strong_risk_off: -1}
+      cash:             {strong_risk_on: -2, mild_risk_on: -1, neutral:  0, mild_risk_off:  1, strong_risk_off:  2}
+    proxies:            # tradeable ETF for each class, used for scanning
+      us_equity: SPY
+      intl_dev_equity: EFA
+      em_equity: EEM
+      hy_credit: HYG
+      ig_credit: LQD
+      long_treasuries: TLT
+      short_treasuries: SHY
+      gold: GLD
+      broad_commodity: DBC
+      cash: BIL
+
+  # -------------------------------------------------------------------------
+  # EQUITY SECTOR PREFERENCE MATRIX
+  # -------------------------------------------------------------------------
+  # Same -2..+2 scale, keyed by SPDR sector ETF. Early-cycle/high-beta
+  # sectors lead risk-on; staples, utilities and healthcare lead risk-off.
+  # Energy is deliberately flat-to-positive across the middle because it
+  # trades on the commodity cycle more than the risk cycle.
+  sector_matrix:
+    sectors:
+      XLK:  {name: Technology,             strong_risk_on:  2, mild_risk_on:  2, neutral:  1, mild_risk_off: -1, strong_risk_off: -2}
+      XLY:  {name: Consumer Discretionary, strong_risk_on:  2, mild_risk_on:  1, neutral:  0, mild_risk_off: -1, strong_risk_off: -2}
+      XLC:  {name: Communication Services, strong_risk_on:  2, mild_risk_on:  1, neutral:  1, mild_risk_off: -1, strong_risk_off: -1}
+      XLF:  {name: Financials,             strong_risk_on:  1, mild_risk_on:  2, neutral:  1, mild_risk_off: -1, strong_risk_off: -2}
+      XLI:  {name: Industrials,            strong_risk_on:  1, mild_risk_on:  1, neutral:  1, mild_risk_off: -1, strong_risk_off: -2}
+      XLB:  {name: Materials,              strong_risk_on:  1, mild_risk_on:  1, neutral:  0, mild_risk_off: -1, strong_risk_off: -2}
+      XLE:  {name: Energy,                 strong_risk_on:  1, mild_risk_on:  1, neutral:  0, mild_risk_off:  0, strong_risk_off: -1}
+      XLRE: {name: Real Estate,            strong_risk_on:  0, mild_risk_on:  1, neutral:  0, mild_risk_off:  0, strong_risk_off: -1}
+      XLV:  {name: Health Care,            strong_risk_on: -1, mild_risk_on:  0, neutral:  1, mild_risk_off:  2, strong_risk_off:  2}
+      XLP:  {name: Consumer Staples,       strong_risk_on: -2, mild_risk_on: -1, neutral:  0, mild_risk_off:  2, strong_risk_off:  2}
+      XLU:  {name: Utilities,              strong_risk_on: -2, mild_risk_on: -1, neutral:  0, mild_risk_off:  2, strong_risk_off:  2}
+    # A sector must clear this to be reported as "favored" for the day.
+    favored_threshold: 1
+    # Blend of matrix score and live relative strength when ranking sectors.
+    # Pure matrix is theory; pure momentum chases. 60/40 leans on the model
+    # while letting the tape veto it.
+    matrix_weight: 0.60
+    momentum_weight: 0.40
+    momentum_lookback_days: 60
+
+  # -------------------------------------------------------------------------
+  # WEEKLY PROCESS CHECKLIST
+  # -------------------------------------------------------------------------
+  # The four steps, in order. `staleness_days` is how long a completed step
+  # stays valid before the checklist reports it as due again.
+  weekly_process:
+    steps:
+      - id: macro_vol_check
+        order: 1
+        name: "Macro & Volatility / Regime Check"
+        staleness_days: 7
+        auto: true          # satisfied automatically when the engine runs
+        description: >
+          Read VIX level and term structure, HY spreads, rates and the
+          composite regime score. Establishes the backdrop everything else is
+          conditional on.
+      - id: capital_assessment
+        order: 2
+        name: "Capital Availability Assessment"
+        staleness_days: 7
+        auto: true
+        description: >
+          MMF AUM, RRP balance, margin debt and net liquidity. Answers whether
+          money exists to be deployed, separately from whether anyone wants to
+          deploy it.
+      - id: sector_rotation
+        order: 3
+        name: "Sector Rotation Scan"
+        staleness_days: 7
+        auto: true
+        description: >
+          Rank the eleven SPDR sectors by the blended preference-matrix and
+          relative-strength score for the current regime.
+      - id: opportunity_filter
+        order: 4
+        name: "Opportunity Filter & Edge Review"
+        staleness_days: 7
+        auto: false         # requires human judgement; never auto-completed
+        description: >
+          Review Layer 2 candidates within favored sectors, confirm each has a
+          stated edge, and record why the trade exists. This step is
+          deliberately manual -- it is the one that cannot be automated.
+
+# =============================================================================
+# LAYER 1 — DATA INFRASTRUCTURE
+# =============================================================================
+data:
+  providers:
+    # Active provider per data type. The abstraction in data/providers.py
+    # exists so TradingView MCP and Futu OpenD can be added later without
+    # touching any other layer.
+    market_data: yfinance      # yfinance | polygon | fmp | tradingview | futu
+    fundamentals: yfinance     # yfinance | fmp | polygon
+    macro: fred
+    filings: sec_edgar
+    transcripts: fmp
+  rate_limits:
+    sec_edgar_per_sec: 8       # SEC's published ceiling; do not raise
+    yfinance_batch_size: 50
+    yfinance_pause_sec: 1.0
+    generic_per_sec: 5
+  timeouts:
+    http_seconds: 20
+    batch_seconds: 60
+  retry:
+    attempts: 3
+    backoff_base_sec: 2
+
+  universe:
+    source: wikipedia
+    wikipedia_url: "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    refresh_days: 7            # re-scrape weekly
+    min_expected_constituents: 450   # sanity gate; below this we keep the cache
+    benchmarks:
+      - SPY
+      - QQQ
+      - IWM
+      - DIA
+    sector_etfs:
+      - XLK
+      - XLF
+      - XLV
+      - XLE
+      - XLI
+      - XLC
+      - XLY
+      - XLP
+      - XLB
+      - XLRE
+      - XLU
+    regime_tickers:
+      - "^VIX"
+      - "^VIX3M"
+      - TLT
+      - HYG
+      - LQD
+      - "HG=F"     # copper
+      - "GC=F"     # gold
+      - "CL=F"     # WTI
+      - "AUDJPY=X"
+      - "USDJPY=X"
+      - "DX-Y.NYB"
+      - SPHB
+      - SPLV
+      - GLD
+      - DBC
+      - EFA
+      - EEM
+      - SHY
+      - BIL
+
+  market_data:
+    start_date: "2015-01-01"   # first fetch only; later runs are incremental
+    incremental: true
+    # Refetch this many days before the last stored date on every run, so late
+    # vendor corrections and split adjustments are picked up rather than
+    # frozen in at whatever they were on first download.
+    overlap_days: 5
+
+  fundamentals:
+    periods: [quarterly, annual]
+    max_quarters: 20           # 5 years, enough for the trend sub-factors
+    refresh_days: 7
+
+  sec:
+    # SEC requires a real contact address in the User-Agent. Set SEC_USER_AGENT
+    # in .env; the loader refuses to call EDGAR without it.
+    base_url: "https://data.sec.gov"
+    efts_url: "https://efts.sec.gov/LATEST/search-index?q="
+    forms:
+      - "10-K"
+      - "10-Q"
+      - "8-K"
+      - "4"
+    insider_lookback_days: 180
+    # Form 4 transaction codes. Only open-market purchases and sales carry
+    # signal; grants, option exercises and tax withholding are compensation
+    # mechanics and are recorded but excluded from the signal.
+    signal_codes: [P, S]
+    noise_codes: [A, M, F, G, C, D]
+    cluster_buy_window_days: 30
+    cluster_buy_min_insiders: 3
+    senior_titles: [CEO, CFO, "Chief Executive", "Chief Financial", President, Chairman]
+
+  institutional:
+    quarters_back: 2
+    # 13-F filers tracked. CIKs are resolved at runtime and cached; a wrong
+    # hardcoded CIK fails silently, so the code looks them up by name.
+    funds:
+      - {name: "Citadel Advisors",        cik: "0001423053"}
+      - {name: "Point72 Asset Management", cik: "0001603466"}
+      - {name: "Bridgewater Associates",  cik: "0001350694"}
+      - {name: "Tiger Global Management", cik: "0001167483"}
+      - {name: "Third Point",             cik: "0001040273"}
+      - {name: "Berkshire Hathaway",      cik: "0001067983"}
+      - {name: "Appaloosa Management",    cik: "0001656456"}
+      - {name: "Baupost Group",           cik: "0001061768"}
+      - {name: "Pershing Square Capital", cik: "0001336528"}
+    multi_fund_open_threshold: 3
+
+  earnings:
+    calendar_days_ahead: 30
+    # Candidates only -- transcripts are expensive and rate-limited.
+    transcripts_for_candidates_only: true
