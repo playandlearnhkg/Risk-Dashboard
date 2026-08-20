@@ -75,6 +75,36 @@ class Provider(ABC):
 
     name: str = "base"
 
+    # --- selectability gates, checked by get_provider() before use ---------
+    # implemented: False means the class is a documented stub. Selecting it in
+    # config must fall back to yfinance with an explanation, never crash the
+    # run mid-ingest.
+    implemented: bool = True
+    # requires_secret: name of the .env key without which the provider returns
+    # empty frames. Missing it is treated as unavailable rather than allowed
+    # to silently produce a working-looking provider that fetches nothing.
+    requires_secret: str | None = None
+    # requires_local_gateway: human description of a local process that must
+    # already be running (Futu OpenD, TradingView Desktop with CDP). These
+    # cannot be probed cheaply at construction time, so they are reported in
+    # the unavailability reason rather than auto-detected.
+    requires_local_gateway: str | None = None
+
+    def preflight(self) -> tuple[bool, str]:
+        """
+        Can this provider actually be used right now?
+
+        Returns (ok, reason). Called by get_provider() BEFORE the provider is
+        handed to any ingest stage, so an unusable choice degrades at startup
+        with one clear message instead of failing per-ticker deep in a loop.
+        """
+        if not self.implemented:
+            detail = f" Needs {self.requires_local_gateway}." if self.requires_local_gateway else ""
+            return False, f"'{self.name}' is not implemented yet.{detail}"
+        if self.requires_secret and not self.cfg.has_secret(self.requires_secret):
+            return False, f"'{self.name}' needs {self.requires_secret} in .env"
+        return True, "ok"
+
     def __init__(self, cfg):
         self.cfg = cfg
         self.attempts = int(cfg.get("data.retry.attempts", 3))
@@ -338,6 +368,7 @@ class FMPProvider(Provider):
     """Financial Modeling Prep. Used for transcripts and as a fundamentals alt."""
 
     name = "fmp"
+    requires_secret = "FMP_API_KEY"
     BASE = "https://financialmodelingprep.com/api/v3"
 
     def __init__(self, cfg):
@@ -401,6 +432,7 @@ class PolygonProvider(Provider):
     """Polygon.io. Structure in place; enable by setting POLYGON_API_KEY."""
 
     name = "polygon"
+    requires_secret = "POLYGON_API_KEY"
     BASE = "https://api.polygon.io"
 
     def __init__(self, cfg):
@@ -441,43 +473,101 @@ class PolygonProvider(Provider):
 
 class TradingViewProvider(Provider):
     """
-    Planned: TradingView via MCP.
+    NOT IMPLEMENTED — and a poor fit for this role. Read before implementing.
 
-    Left as an explicit stub rather than omitted so the seam is visible. To
-    implement, satisfy get_prices/get_fundamentals with the same contracts
-    documented on Provider, then set data.providers.market_data: tradingview.
+    TradingView has no REST data API here. Access is Chrome DevTools Protocol
+    automation against the TradingView **Desktop** app, launched with
+    `--remote-debugging-port=9222`, driven through tools like `tv_health_check`,
+    `pine_set_source`, `pine_check`, `data_get_ohlcv` and
+    `data_get_pine_tables`.
+
+    Why it does not belong as `market_data`:
+      * It is one symbol at a time through a UI automation surface. This role
+        refreshes 530+ tickers daily; that is the wrong shape entirely.
+      * The CDP link dies whenever the app restarts normally, and a relaunch
+        clears attached studies from the chart.
+      * Extraction goes through Pine `table.new()` cells read back as text —
+        a rendering channel, not a data feed. `log.info()` is NOT readable.
+
+    What it IS uniquely good for: order-flow footprint data via
+    `request.footprint()` (Premium/Ultimate only) — buy/sell volume per price
+    row, delta, POC/VAH/VAL, diagonal imbalances. Nothing free replicates that.
+
+    RECOMMENDATION: when this is built, make it a separate specialist module
+    (e.g. `data/footprint.py`) that stores footprint rows for a handful of
+    watched symbols — not a drop-in `Provider` promising bulk OHLCV. Two known
+    traps if you do: `ticksPerRow` must be `simple int` (a series like
+    `ta.atr()` fails to compile), and `request.footprint()` returns `na` when a
+    bar has no data, so every read needs `if not na(fp)`.
     """
 
     name = "tradingview"
+    implemented = False
+    requires_local_gateway = (
+        "TradingView Desktop running with --remote-debugging-port=9222, "
+        "plus Premium/Ultimate for footprint data"
+    )
 
     def get_prices(self, tickers, start, end=None) -> pd.DataFrame:
-        raise NotImplementedError("TradingView MCP provider not implemented yet")
+        raise NotImplementedError(
+            "TradingView provider not implemented. See the class docstring — "
+            "it is a CDP automation surface suited to footprint extraction, "
+            "not bulk daily OHLCV."
+        )
 
     def get_fundamentals(self, ticker, period="quarterly") -> dict[str, pd.DataFrame]:
-        raise NotImplementedError("TradingView MCP provider not implemented yet")
+        raise NotImplementedError("TradingView provider not implemented")
 
     def healthcheck(self) -> tuple[bool, str]:
-        return False, "not implemented"
+        return False, "not implemented (CDP automation surface — see docstring)"
 
 
 class FutuProvider(Provider):
     """
-    Planned: Futu OpenD.
+    NOT IMPLEMENTED — but a genuinely good fit, and the closest to ready.
 
-    Same contract as above. Futu additionally requires a locally running OpenD
-    gateway, so healthcheck should probe that socket once implemented.
+    Futu OpenD is a LOCAL gateway. You run the OpenD application on the same
+    machine, logged into your account, listening on 127.0.0.1:11111, and the
+    client connects to that socket. There is no cloud endpoint and no API key
+    in .env — the credential is the logged-in OpenD session.
+
+        from futu import OpenQuoteContext, KLType
+        ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
+        ret, data, page_key = ctx.request_history_kline(
+            "US.AAPL", start=..., end=..., ktype=KLType.K_DAY)
+
+    Three things to get right when implementing:
+      1. SYMBOL FORMAT. Futu wants a market prefix — "US.AAPL", not "AAPL".
+         Translate at the provider boundary so no other layer learns about it.
+      2. PAGINATION. `request_history_kline` returns `page_key`; loop until it
+         is None or long histories silently truncate.
+      3. CACHE TO DISK. Quota is per-account and finite. Write one parquet per
+         symbol/date-range on fetch and check it before requesting, so a rerun
+         costs nothing and an interrupted backfill is resumable. This matters
+         more than it looks — without it, a crashed 500-ticker run burns the
+         day's quota with nothing to show.
+
+    `preflight()` cannot detect whether OpenD is actually running without
+    attempting a connection, so this stays gated on `implemented` until the
+    real client exists; at that point, replace this with a socket probe of
+    127.0.0.1:11111 and report "OpenD not running" distinctly from "not built".
     """
 
     name = "futu"
+    implemented = False
+    requires_local_gateway = "FutuOpenD running and logged in on 127.0.0.1:11111"
 
     def get_prices(self, tickers, start, end=None) -> pd.DataFrame:
-        raise NotImplementedError("Futu OpenD provider not implemented yet")
+        raise NotImplementedError(
+            "Futu provider not implemented. Requires FutuOpenD on "
+            "127.0.0.1:11111 — see the class docstring."
+        )
 
     def get_fundamentals(self, ticker, period="quarterly") -> dict[str, pd.DataFrame]:
-        raise NotImplementedError("Futu OpenD provider not implemented yet")
+        raise NotImplementedError("Futu provider not implemented")
 
     def healthcheck(self) -> tuple[bool, str]:
-        return False, "not implemented"
+        return False, "not implemented (needs local OpenD gateway)"
 
 
 # ---------------------------------------------------------------------------
@@ -495,17 +585,80 @@ REGISTRY: dict[str, type[Provider]] = {
 
 def get_provider(cfg, role: str = "market_data") -> Provider:
     """
-    Build the provider configured for `role`.
+    Build the provider configured for `role`, falling back to yfinance when
+    the configured one cannot actually be used.
 
-    Falls back to yfinance with a warning rather than failing the run: a typo
-    in config.yaml should degrade to the free default, not stop the morning
-    data pull.
+    THREE failure modes are handled here, all by degrading rather than
+    raising. A data pull should never die at startup because of a config
+    choice — the free default always works, and the run tells you loudly what
+    it substituted and why.
+
+      1. Unknown name        — typo in config.yaml
+      2. Not implemented     — tradingview / futu stubs
+      3. Missing credential  — fmp / polygon selected without their key
+
+    Previously only case 1 was caught, so setting `market_data: tradingview`
+    produced a provider that raised NotImplementedError on the first fetch,
+    mid-ingest, after the universe stage had already run.
     """
-    name = cfg.get(f"data.providers.{role}", "yfinance")
-    cls = REGISTRY.get(name)
+    requested = cfg.get(f"data.providers.{role}", "yfinance")
+    cls = REGISTRY.get(requested)
+
+    # --- 1. unknown name ---------------------------------------------------
     if cls is None:
-        log.warning("Unknown provider '%s' for role '%s'; using yfinance", name, role)
-        cls = YFinanceProvider
-    provider = cls(cfg)
-    log.info("Provider for %-14s → %s", role, provider.name)
-    return provider
+        log.warning(
+            "Provider '%s' for role '%s' is not recognised — falling back to "
+            "yfinance. Valid options: %s",
+            requested, role, ", ".join(sorted(REGISTRY)),
+        )
+        provider = YFinanceProvider(cfg)
+        log.info("Provider for %-14s → %s (fallback)", role, provider.name)
+        return provider
+
+    # --- 2 & 3. constructed, but check it can actually be used -------------
+    try:
+        provider = cls(cfg)
+        usable, reason = provider.preflight()
+    except Exception as exc:                           # noqa: BLE001
+        usable, reason = False, f"failed to construct: {exc}"
+        provider = None
+
+    if usable:
+        log.info("Provider for %-14s → %s", role, provider.name)
+        return provider
+
+    # Fall back. WARNING not ERROR: the run continues correctly, just not with
+    # the provider that was asked for, and the user needs to see that clearly.
+    log.warning("Provider '%s' for role '%s' is unavailable — %s", requested, role, reason)
+    log.warning("  → falling back to yfinance for '%s'", role)
+
+    fallback = YFinanceProvider(cfg)
+    log.info("Provider for %-14s → %s (fallback from '%s')",
+             role, fallback.name, requested)
+    return fallback
+
+
+def provider_report(cfg) -> list[tuple[str, str, str, str]]:
+    """
+    Per-role provider status, for the run summary.
+
+    Returns (role, requested, effective, note) so run_data.py can show at a
+    glance whether it is running on what was configured — a silent fallback
+    that only appears in the log is easy to miss for weeks.
+    """
+    out: list[tuple[str, str, str, str]] = []
+    for role in ("market_data", "fundamentals", "filings", "macro", "transcripts"):
+        requested = cfg.get(f"data.providers.{role}")
+        if requested is None:
+            continue
+        cls = REGISTRY.get(requested)
+        if cls is None:
+            out.append((role, requested, "yfinance", "unknown provider name"))
+            continue
+        try:
+            usable, reason = cls(cfg).preflight()
+        except Exception as exc:                       # noqa: BLE001
+            usable, reason = False, str(exc)
+        out.append((role, requested, requested if usable else "yfinance",
+                    "" if usable else reason))
+    return out

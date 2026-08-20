@@ -37,7 +37,9 @@ log = get_logger("data.institutional")
 class InstitutionalStats:
     funds_requested: int = 0
     funds_processed: int = 0
-    holdings: int = 0
+    holdings: int = 0          # rows STORED, after per-ticker aggregation
+    lines_parsed: int = 0      # 13-F line items matched to a ticker
+    lines_merged: int = 0      # lines folded into an existing ticker by summing
     multi_fund_opens: int = 0
     failed_funds: list[str] = field(default_factory=list)
     error: str = ""
@@ -185,7 +187,23 @@ def ingest(db, cfg, client: Optional[SECClient] = None) -> InstitutionalStats:
             if not xml:
                 continue
 
-            rows: list[tuple] = []
+            # AGGREGATE BEFORE INSERT.
+            #
+            # A 13-F lists the same issuer on several lines: different share
+            # classes, separate lots, and PUT/CALL rows all carry the same
+            # CUSIP-to-ticker mapping. The primary key is
+            # (fund_cik, ticker, report_date), so inserting them one by one
+            # made each line REPLACE the previous one and the fund's position
+            # collapsed to whichever line happened to be parsed last.
+            #
+            # Measured on a real run before this fix: 4,766 parsed rows became
+            # 1,799 stored rows — 62% of the data silently overwritten, and
+            # every surviving position understated.
+            #
+            # Summing is the correct reduction: the fund's economic exposure to
+            # a ticker is the total across its lines, not one arbitrary line.
+            merged: dict[tuple[str, str], dict[str, Any]] = {}
+            parsed_lines = 0
             for holding in _parse_13f(xml):
                 issuer = re.sub(r"[^a-z0-9 ]", "", (holding["issuer"] or "").lower())
                 issuer = re.sub(
@@ -194,11 +212,36 @@ def ingest(db, cfg, client: Optional[SECClient] = None) -> InstitutionalStats:
                 ticker = name_map.get(issuer)
                 if not ticker:
                     continue        # unmatched: drop rather than guess
-                rows.append((cik, fund_name, ticker, holding["cusip"],
-                             report_date or filed_date,
-                             holding["shares"], holding["value_usd"]))
+                parsed_lines += 1
+
+                period = report_date or filed_date
+                key = (ticker, period)
+                entry = merged.get(key)
+                if entry is None:
+                    merged[key] = {
+                        "cusip": holding["cusip"],
+                        "shares": holding["shares"] or 0.0,
+                        "value_usd": holding["value_usd"] or 0.0,
+                        "lines": 1,
+                    }
+                else:
+                    entry["shares"] += holding["shares"] or 0.0
+                    entry["value_usd"] += holding["value_usd"] or 0.0
+                    entry["lines"] += 1
+
+            stats.lines_parsed += parsed_lines
+            stats.lines_merged += parsed_lines - len(merged)
+
+            rows = [
+                (cik, fund_name, ticker, agg["cusip"], period,
+                 agg["shares"], agg["value_usd"])
+                for (ticker, period), agg in merged.items()
+            ]
 
             if rows:
+                # Count what is actually stored, not what was submitted. The
+                # old code reported the submitted count, which is how the
+                # overwrite stayed invisible in the run summary.
                 stats.holdings += db.upsert_many(
                     "institutional_holdings",
                     ["fund_cik", "fund_name", "ticker", "cusip",
@@ -210,8 +253,10 @@ def ingest(db, cfg, client: Optional[SECClient] = None) -> InstitutionalStats:
         log.debug("13-F processed: %s", fund_name)
 
     stats.multi_fund_opens = len(multi_fund_openings(db, cfg))
-    log.info("13-F: %d holdings from %d/%d funds (%d multi-fund opens)",
-             stats.holdings, stats.funds_processed, len(funds), stats.multi_fund_opens)
+    log.info("13-F: %d positions stored from %d/%d funds "
+             "(%d lines parsed, %d merged by summing) — %d multi-fund opens",
+             stats.holdings, stats.funds_processed, len(funds),
+             stats.lines_parsed, stats.lines_merged, stats.multi_fund_opens)
     return stats
 
 

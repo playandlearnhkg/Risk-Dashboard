@@ -39,7 +39,7 @@ from data import (                                                 # noqa: E402
     earnings_calendar, estimates, fundamentals, institutional,
     market_data, sec_data, short_interest, transcripts, universe,
 )
-from data.providers import get_provider                            # noqa: E402
+from data.providers import get_provider, provider_report          # noqa: E402
 
 ALL_STAGES = ["universe", "prices", "fundamentals", "ratios", "short_interest",
               "estimates", "earnings", "filings", "institutional"]
@@ -91,6 +91,12 @@ def main() -> int:
     print(kv("Market data provider", f"{provider.name} — {detail}"))
     if not healthy:
         print(warn("Provider healthcheck failed; price stages may return nothing."))
+
+    # Show every role, so a silent fallback is visible here and not only in
+    # the log file.
+    for role, requested, effective, note in provider_report(cfg):
+        if requested != effective:
+            print(warn(f"{role}: configured '{requested}' → using '{effective}' ({note})"))
 
     def selected(name: str) -> bool:
         if args.stage:
@@ -301,8 +307,9 @@ def main() -> int:
                 results["institutional"] = f"SKIPPED: {inst.error[:80]}"
                 _record(db, run_id, "institutional", "skipped", 0, inst.error, t0)
             else:
-                msg = (f"{inst.holdings} holdings from "
-                       f"{inst.funds_processed}/{inst.funds_requested} funds")
+                msg = (f"{inst.holdings} positions from "
+                       f"{inst.funds_processed}/{inst.funds_requested} funds "
+                       f"({inst.lines_parsed} lines, {inst.lines_merged} merged)")
                 print(ok(msg))
                 if inst.multi_fund_opens:
                     print(info(f"multi-fund new positions: {inst.multi_fund_opens}"))
