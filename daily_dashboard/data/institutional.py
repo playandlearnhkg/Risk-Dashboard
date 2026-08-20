@@ -40,6 +40,9 @@ class InstitutionalStats:
     holdings: int = 0          # rows STORED, after per-ticker aggregation
     lines_parsed: int = 0      # 13-F line items matched to a ticker
     lines_merged: int = 0      # lines folded into an existing ticker by summing
+    common_lines: int = 0      # common-stock lines (the conviction signal)
+    option_lines: int = 0      # PUT/CALL lines, kept out of shares/value_usd
+    principal_lines: int = 0   # PRN lines (convertible debt), not share counts
     multi_fund_opens: int = 0
     failed_funds: list[str] = field(default_factory=list)
     error: str = ""
@@ -82,6 +85,7 @@ def _parse_13f(xml_text: str) -> list[dict[str, Any]]:
             value = 0.0
 
         shares = None
+        amount_type = "SH"
         shrs_node = entry.find(re.compile(r"shrsOrPrnAmt$", re.IGNORECASE))
         if shrs_node:
             amt = shrs_node.find(re.compile(r"sshPrnamt$", re.IGNORECASE))
@@ -90,12 +94,27 @@ def _parse_13f(xml_text: str) -> list[dict[str, Any]]:
                     shares = float(amt.get_text(strip=True))
                 except ValueError:
                     shares = None
+            # sshPrnamtType is "SH" for a share count or "PRN" for a debt
+            # PRINCIPAL amount. They are different units entirely: a PRN row
+            # on a convertible bond reports dollars of principal, and adding
+            # it to a share count produces nonsense. Citadel's DXCM line came
+            # out at an implied $922/share for exactly this reason.
+            type_node = shrs_node.find(re.compile(r"sshPrnamtType$", re.IGNORECASE))
+            if type_node:
+                amount_type = (type_node.get_text(strip=True) or "SH").upper()
+
+        # putCall is ABSENT on a common-stock line and set to "Put" or "Call"
+        # on an option line. Treating a missing tag as common stock is correct
+        # and is what the 13-F format intends.
+        put_call = (text("putCall") or "").strip().upper()
 
         if not cusip or shares is None:
             continue
         out.append({
             "cusip": cusip, "issuer": name, "shares": shares,
             "value_usd": _normalise_value(value, shares),
+            "put_call": put_call,          # "", "PUT" or "CALL"
+            "amount_type": amount_type,    # "SH" (shares) or "PRN" (principal)
         })
     return out
 
@@ -202,6 +221,18 @@ def ingest(db, cfg, client: Optional[SECClient] = None) -> InstitutionalStats:
             #
             # Summing is the correct reduction: the fund's economic exposure to
             # a ticker is the total across its lines, not one arbitrary line.
+            # Options are summed SEPARATELY from common stock.
+            #
+            # A 13-F reports a PUT on a name in the same shape as owning it,
+            # and adding them together produces a number that means nothing:
+            # a fund short 5m shares via puts would read as a large holder.
+            # Citadel's pre-separation DXCM line came out at $84bn for exactly
+            # this reason — overwhelmingly option notional, not conviction.
+            #
+            # shares/value_usd therefore carry COMMON STOCK ONLY, which is the
+            # conviction signal Layer 2's Institutional Flow factor wants.
+            # Option notional is kept alongside so nothing is thrown away and
+            # a later factor can use it deliberately.
             merged: dict[tuple[str, str], dict[str, Any]] = {}
             parsed_lines = 0
             for holding in _parse_13f(xml):
@@ -216,25 +247,43 @@ def ingest(db, cfg, client: Optional[SECClient] = None) -> InstitutionalStats:
 
                 period = report_date or filed_date
                 key = (ticker, period)
-                entry = merged.get(key)
-                if entry is None:
-                    merged[key] = {
-                        "cusip": holding["cusip"],
-                        "shares": holding["shares"] or 0.0,
-                        "value_usd": holding["value_usd"] or 0.0,
-                        "lines": 1,
-                    }
+                entry = merged.setdefault(key, {
+                    "cusip": holding["cusip"],
+                    "shares": 0.0, "value_usd": 0.0,
+                    "put_value_usd": 0.0, "call_value_usd": 0.0,
+                    "other_value_usd": 0.0,
+                    "lines": 0,
+                })
+                entry["lines"] += 1
+
+                kind = holding.get("put_call", "")
+                value = holding["value_usd"] or 0.0
+
+                if holding.get("amount_type", "SH") != "SH":
+                    # PRN — debt principal, not shares. Value is still real
+                    # money at risk in the name, so keep it, but never let it
+                    # reach `shares` or the common-stock value.
+                    entry["other_value_usd"] += value
+                    stats.principal_lines += 1
+                elif kind == "PUT":
+                    entry["put_value_usd"] += value
+                    stats.option_lines += 1
+                elif kind == "CALL":
+                    entry["call_value_usd"] += value
+                    stats.option_lines += 1
                 else:
                     entry["shares"] += holding["shares"] or 0.0
-                    entry["value_usd"] += holding["value_usd"] or 0.0
-                    entry["lines"] += 1
+                    entry["value_usd"] += value
+                    stats.common_lines += 1
 
             stats.lines_parsed += parsed_lines
             stats.lines_merged += parsed_lines - len(merged)
 
             rows = [
                 (cik, fund_name, ticker, agg["cusip"], period,
-                 agg["shares"], agg["value_usd"])
+                 agg["shares"], agg["value_usd"],
+                 agg["put_value_usd"], agg["call_value_usd"],
+                 agg["other_value_usd"])
                 for (ticker, period), agg in merged.items()
             ]
 
@@ -244,8 +293,9 @@ def ingest(db, cfg, client: Optional[SECClient] = None) -> InstitutionalStats:
                 # overwrite stayed invisible in the run summary.
                 stats.holdings += db.upsert_many(
                     "institutional_holdings",
-                    ["fund_cik", "fund_name", "ticker", "cusip",
-                     "report_date", "shares", "value_usd"],
+                    ["fund_cik", "fund_name", "ticker", "cusip", "report_date",
+                     "shares", "value_usd", "put_value_usd", "call_value_usd",
+                     "other_value_usd"],
                     rows,
                 )
 
@@ -253,10 +303,11 @@ def ingest(db, cfg, client: Optional[SECClient] = None) -> InstitutionalStats:
         log.debug("13-F processed: %s", fund_name)
 
     stats.multi_fund_opens = len(multi_fund_openings(db, cfg))
-    log.info("13-F: %d positions stored from %d/%d funds "
-             "(%d lines parsed, %d merged by summing) — %d multi-fund opens",
+    log.info("13-F: %d positions from %d/%d funds — %d lines "
+             "(%d common, %d option, %d principal), %d merged — %d multi-fund opens",
              stats.holdings, stats.funds_processed, len(funds),
-             stats.lines_parsed, stats.lines_merged, stats.multi_fund_opens)
+             stats.lines_parsed, stats.common_lines, stats.option_lines,
+             stats.principal_lines, stats.lines_merged, stats.multi_fund_opens)
     return stats
 
 
@@ -269,10 +320,16 @@ def fund_counts(db) -> pd.DataFrame:
     latest = db.scalar("SELECT MAX(report_date) FROM institutional_holdings")
     if not latest:
         return pd.DataFrame()
+    # shares > 0 filters to funds actually holding the COMMON STOCK. A fund
+    # whose only exposure is options is not a holder in the sense this factor
+    # means, and counting it would overstate conviction.
     rows = db.query(
         "SELECT ticker, COUNT(DISTINCT fund_cik) AS n_funds, "
-        "       SUM(value_usd) AS total_value "
-        "FROM institutional_holdings WHERE report_date = ? GROUP BY ticker",
+        "       SUM(value_usd) AS total_value, "
+        "       SUM(COALESCE(put_value_usd,0))  AS put_value, "
+        "       SUM(COALESCE(call_value_usd,0)) AS call_value "
+        "FROM institutional_holdings WHERE report_date = ? AND shares > 0 "
+        "GROUP BY ticker",
         (latest,),
     )
     return pd.DataFrame([dict(r) for r in rows]) if rows else pd.DataFrame()
@@ -298,7 +355,8 @@ def net_change(db) -> pd.DataFrame:
         "  COALESCE((SELECT SUM(p.shares) FROM institutional_holdings p "
         "            WHERE p.ticker = c.ticker AND p.report_date = ?), 0) AS shares_prior, "
         "  COUNT(DISTINCT c.fund_cik) AS n_funds_now "
-        "FROM institutional_holdings c WHERE c.report_date = ? GROUP BY c.ticker",
+        "FROM institutional_holdings c WHERE c.report_date = ? AND c.shares > 0 "
+        "GROUP BY c.ticker",
         (prior, current),
     )
     if not rows:
@@ -332,9 +390,10 @@ def multi_fund_openings(db, cfg) -> dict[str, int]:
     rows = db.query(
         "SELECT c.ticker, COUNT(DISTINCT c.fund_cik) AS n_new "
         "FROM institutional_holdings c "
-        "WHERE c.report_date = ? AND NOT EXISTS ("
+        "WHERE c.report_date = ? AND c.shares > 0 AND NOT EXISTS ("
         "  SELECT 1 FROM institutional_holdings p "
-        "  WHERE p.ticker = c.ticker AND p.fund_cik = c.fund_cik AND p.report_date = ?) "
+        "  WHERE p.ticker = c.ticker AND p.fund_cik = c.fund_cik "
+        "    AND p.report_date = ? AND p.shares > 0) "
         "GROUP BY c.ticker HAVING n_new >= ?",
         (current, prior, threshold),
     )

@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from core.config import load_config                                # noqa: E402
 from core.db import Database                                       # noqa: E402
+from core.status import write_status                               # noqa: E402
 from core.logging_setup import (                                   # noqa: E402
     BOLD, DIM, GREEN, RESET, YELLOW, banner, fail, info, kv, ok,
     setup_logging, stage, warn,
@@ -157,6 +158,20 @@ def main() -> int:
             if p.failed_tickers:
                 print(warn(f"no data: {', '.join(sorted(p.failed_tickers)[:12])}"
                            f"{' …' if len(p.failed_tickers) > 12 else ''}"))
+
+            # Rate limiting is a DIFFERENT failure from "ticker not found",
+            # and the distinction matters: one resolves by waiting, the other
+            # needs the ticker investigated. Say which.
+            rl = provider.rate_limit
+            if rl.limited:
+                print(warn(f"RATE LIMITED by the data provider — {rl.hits} hit(s), "
+                           f"{rl.cooldowns} cooldown(s)."))
+                if rl.aborted:
+                    print(warn("Price fetch STOPPED EARLY to avoid extending the "
+                               "block. Data is PARTIAL — rerun later to resume."))
+                print(info("Prices already stored were kept. Reruns resume from "
+                           "the last stored date, so nothing is refetched."))
+                msg += "  [RATE LIMITED]"
             results["prices"] = msg
             _record(db, run_id, "prices", "ok", p.rows_written, msg, t0)
         except Exception as exc:                       # noqa: BLE001
@@ -309,7 +324,8 @@ def main() -> int:
             else:
                 msg = (f"{inst.holdings} positions from "
                        f"{inst.funds_processed}/{inst.funds_requested} funds "
-                       f"({inst.lines_parsed} lines, {inst.lines_merged} merged)")
+                       f"({inst.common_lines} common, {inst.option_lines} option, "
+                       f"{inst.principal_lines} principal)")
                 print(ok(msg))
                 if inst.multi_fund_opens:
                     print(info(f"multi-fund new positions: {inst.multi_fund_opens}"))
@@ -344,6 +360,20 @@ def main() -> int:
     cov = market_data.coverage_report(db)
     print(f"\n  {BOLD}Price coverage{RESET}  latest {cov['latest_date']} · "
           f"{cov['tickers']} tickers · {cov['stale_tickers']} stale")
+
+    # Persist status so the Streamlit dashboard can show provider and
+    # rate-limit state without anyone reading a log file.
+    status_path = write_status(
+        cfg,
+        providers=provider_report(cfg),
+        rate_limit=provider.rate_limit.as_dict(),
+        price_coverage=cov,
+        stage_results=results,
+        run_id=run_id,
+        elapsed_sec=elapsed,
+    )
+    if status_path:
+        print(info(f"Wrote {status_path.name} for the dashboard"))
 
     sectors = universe.sector_counts(db)
     if sectors:

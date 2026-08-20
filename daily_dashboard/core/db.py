@@ -142,14 +142,20 @@ CREATE TABLE IF NOT EXISTS insider_transactions (
 CREATE INDEX IF NOT EXISTS ix_insider_ticker ON insider_transactions(ticker, transaction_date);
 
 -- ------------------------------------------------------ institutional 13-F
+-- shares / value_usd hold COMMON STOCK ONLY. Option positions are kept in
+-- their own columns so a fund's conviction in the underlying is never
+-- conflated with a hedge or a levered bet. See data/institutional.py.
 CREATE TABLE IF NOT EXISTS institutional_holdings (
-    fund_cik     TEXT NOT NULL,
-    fund_name    TEXT,
-    ticker       TEXT NOT NULL,
-    cusip        TEXT,
-    report_date  TEXT NOT NULL,
-    shares       REAL,
-    value_usd    REAL,
+    fund_cik       TEXT NOT NULL,
+    fund_name      TEXT,
+    ticker         TEXT NOT NULL,
+    cusip          TEXT,
+    report_date    TEXT NOT NULL,
+    shares         REAL,      -- common stock only
+    value_usd      REAL,      -- common stock only
+    put_value_usd  REAL,      -- notional of PUT positions, informational
+    call_value_usd REAL,      -- notional of CALL positions, informational
+    other_value_usd REAL,     -- PRN rows (convertible debt), not share counts
     PRIMARY KEY (fund_cik, ticker, report_date)
 );
 CREATE INDEX IF NOT EXISTS ix_inst_ticker ON institutional_holdings(ticker, report_date);
@@ -245,9 +251,37 @@ class Database:
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
+    # Columns added after a table first shipped. CREATE TABLE IF NOT EXISTS
+    # will not alter an existing table, so a database created before a schema
+    # change keeps the old shape and every INSERT naming a new column fails.
+    # Each entry is (table, column, SQL type) and is applied idempotently.
+    MIGRATIONS: list[tuple[str, str, str]] = [
+        ("institutional_holdings", "put_value_usd", "REAL"),
+        ("institutional_holdings", "call_value_usd", "REAL"),
+        ("institutional_holdings", "other_value_usd", "REAL"),
+    ]
+
     def _init_schema(self) -> None:
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate(conn)
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """Add any columns missing from an older database, in place."""
+        for table, column, coltype in self.MIGRATIONS:
+            try:
+                existing = {
+                    row["name"] for row in
+                    conn.execute(f"PRAGMA table_info({table})").fetchall()
+                }
+            except sqlite3.Error:
+                continue                       # table not created yet
+            if not existing or column in existing:
+                continue
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+            except sqlite3.Error:
+                pass                           # raced with another writer
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

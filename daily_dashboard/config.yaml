@@ -414,15 +414,30 @@ data:
     transcripts: fmp
   rate_limits:
     sec_edgar_per_sec: 8       # SEC's published ceiling; do not raise
-    yfinance_batch_size: 50
-    yfinance_pause_sec: 1.0
     generic_per_sec: 5
+
+    # --- yfinance / HTTP 429 controls -----------------------------------
+    # Yahoo has no published rate limit and no documented quota; it simply
+    # starts returning 429 and then keeps doing so for a while. These are
+    # tuned for a full ~530-ticker universe refresh from a HOME IP. On a
+    # shared or cloud IP (Streamlit Cloud, CI) expect 429s regardless —
+    # run the full price refresh locally.
+    yfinance_batch_size: 25          # symbols per download call
+    yfinance_pause_sec: 3.0          # baseline gap between batches
+    yfinance_max_threads: 4          # concurrent requests inside a batch
+    yfinance_cooldown_sec: 90        # pause after a 429 before continuing
+    yfinance_max_429: 6              # give up the stage after this many 429s
+    yfinance_backoff_growth: 1.6     # batch pause multiplier after each 429
   timeouts:
     http_seconds: 20
     batch_seconds: 60
   retry:
     attempts: 3
     backoff_base_sec: 2
+    # Full jitter on retries. Without it, every ticker in a failed batch
+    # retries at the same instant and re-triggers the same 429 in lockstep —
+    # the classic thundering herd. Randomising the delay spreads them out.
+    jitter: true
 
   universe:
     source: wikipedia

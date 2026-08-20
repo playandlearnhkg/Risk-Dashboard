@@ -26,9 +26,11 @@ only works if a gap arrives as a gap rather than as a traceback.
 from __future__ import annotations
 
 import datetime as dt
+import random
 import threading
 import time
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import pandas as pd
@@ -64,6 +66,58 @@ class RateLimiter:
             if sleep_for > 0:
                 time.sleep(sleep_for)
             self._last = time.monotonic()
+
+
+def looks_rate_limited(exc: Exception) -> bool:
+    """
+    Is this exception a 429 / rate limit?
+
+    yfinance swallows the HTTP layer and re-raises assorted exception types,
+    so there is no status code to inspect — string matching is the only
+    option available. Kept in one place rather than duplicated at each call
+    site so the patterns can be extended as new phrasings appear.
+    """
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(marker in text for marker in (
+        "429", "too many requests", "rate limit", "rate-limit",
+        "temporarily blocked", "throttl",
+    ))
+
+
+@dataclass
+class RateLimitState:
+    """
+    Rate-limit accounting for one provider instance.
+
+    Shared across an entire ingest run so the picture is cumulative: a stage
+    that trips 429s should slow the NEXT stage down too, and the run summary
+    (and the dashboard) needs to know the data is incomplete for that reason
+    rather than because the tickers do not exist.
+    """
+
+    hits: int = 0                     # total 429s seen this run
+    cooldowns: int = 0                # how many times we paused and waited
+    pause_multiplier: float = 1.0     # grows after each hit
+    aborted: bool = False             # stage gave up to protect the IP
+    first_hit_at: Optional[str] = None
+
+    @property
+    def limited(self) -> bool:
+        return self.hits > 0
+
+    def record(self) -> None:
+        self.hits += 1
+        if self.first_hit_at is None:
+            self.first_hit_at = dt.datetime.now().isoformat(timespec="seconds")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "rate_limited": self.limited,
+            "hits": self.hits,
+            "cooldowns": self.cooldowns,
+            "aborted": self.aborted,
+            "first_hit_at": self.first_hit_at,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -109,8 +163,13 @@ class Provider(ABC):
         self.cfg = cfg
         self.attempts = int(cfg.get("data.retry.attempts", 3))
         self.backoff_base = float(cfg.get("data.retry.backoff_base_sec", 2))
+        self.jitter = bool(cfg.get("data.retry.jitter", True))
         self.timeout = int(cfg.get("data.timeouts.http_seconds", 20))
+        self.cooldown_sec = float(cfg.get("data.rate_limits.yfinance_cooldown_sec", 90))
         self.limiter = RateLimiter(float(cfg.get("data.rate_limits.generic_per_sec", 5)))
+        # Shared across the whole run so 429s accumulate rather than resetting
+        # per stage — see RateLimitState.
+        self.rate_limit = RateLimitState()
 
     # -- retry helper ------------------------------------------------------
 
@@ -129,13 +188,35 @@ class Provider(ABC):
                 return fn(*args, **kwargs)
             except Exception as exc:                       # noqa: BLE001
                 last_exc = exc
-                if attempt < self.attempts:
-                    delay = self.backoff_base ** attempt
-                    log.debug("%s attempt %d/%d failed (%s); retrying in %.0fs",
-                              label or fn.__name__, attempt, self.attempts, exc, delay)
-                    time.sleep(delay)
-        log.warning("%s failed after %d attempts: %s",
-                    label or getattr(fn, "__name__", "call"), self.attempts, last_exc)
+                limited = looks_rate_limited(exc)
+                if limited:
+                    self.rate_limit.record()
+
+                if attempt >= self.attempts:
+                    break
+
+                # FULL JITTER: sleep a random amount in [0, backoff], not the
+                # backoff itself. Fixed backoff makes every ticker in a failed
+                # batch retry at the same instant and re-trigger the same 429
+                # together; randomising spreads the retries out.
+                ceiling = self.backoff_base ** attempt
+                if limited:
+                    # A 429 means back off much harder than a transient error.
+                    ceiling = max(ceiling, self.cooldown_sec)
+                delay = random.uniform(0, ceiling) if self.jitter else ceiling
+
+                log.debug("%s attempt %d/%d failed (%s%s); retrying in %.1fs",
+                          label or fn.__name__, attempt, self.attempts,
+                          "RATE LIMITED — " if limited else "", exc, delay)
+                time.sleep(delay)
+
+        if looks_rate_limited(last_exc) if last_exc else False:
+            log.warning("%s gave up after %d attempts — RATE LIMITED (429)",
+                        label or getattr(fn, "__name__", "call"), self.attempts)
+        else:
+            log.warning("%s failed after %d attempts: %s",
+                        label or getattr(fn, "__name__", "call"),
+                        self.attempts, last_exc)
         return None
 
     # -- interface ---------------------------------------------------------
@@ -195,8 +276,11 @@ class YFinanceProvider(Provider):
 
     def __init__(self, cfg):
         super().__init__(cfg)
-        self.batch_size = int(cfg.get("data.rate_limits.yfinance_batch_size", 50))
-        self.pause = float(cfg.get("data.rate_limits.yfinance_pause_sec", 1.0))
+        self.batch_size = int(cfg.get("data.rate_limits.yfinance_batch_size", 25))
+        self.pause = float(cfg.get("data.rate_limits.yfinance_pause_sec", 3.0))
+        self.max_threads = int(cfg.get("data.rate_limits.yfinance_max_threads", 4))
+        self.max_429 = int(cfg.get("data.rate_limits.yfinance_max_429", 6))
+        self.backoff_growth = float(cfg.get("data.rate_limits.yfinance_backoff_growth", 1.6))
 
     # -- prices ------------------------------------------------------------
 
@@ -205,21 +289,58 @@ class YFinanceProvider(Provider):
         import yfinance as yf
 
         frames: list[pd.DataFrame] = []
-        for i in range(0, len(tickers), self.batch_size):
-            batch = tickers[i:i + self.batch_size]
-            log.debug("prices batch %d-%d of %d", i + 1, i + len(batch), len(tickers))
+        n_batches = (len(tickers) + self.batch_size - 1) // self.batch_size
 
+        for bi, i in enumerate(range(0, len(tickers), self.batch_size), start=1):
+            # ABORT GUARD. Once Yahoo has 429'd repeatedly, continuing hammers
+            # an IP that is already being throttled and tends to extend the
+            # block. Stop the stage and keep whatever was fetched — partial
+            # data is the correct outcome, and the caller reports it as such.
+            if self.rate_limit.hits >= self.max_429:
+                self.rate_limit.aborted = True
+                log.warning(
+                    "Stopping price fetch after %d rate-limit hits — %d of %d "
+                    "batches done. Keeping partial data; rerun later to resume.",
+                    self.rate_limit.hits, bi - 1, n_batches)
+                break
+
+            batch = tickers[i:i + self.batch_size]
+            log.debug("prices batch %d/%d (%d symbols)", bi, n_batches, len(batch))
+
+            before = self.rate_limit.hits
             raw = self._retry(
                 yf.download, batch, start=start, end=end, interval="1d",
                 auto_adjust=False,     # keep close AND adj_close distinct
-                progress=False, threads=True, group_by="column",
+                progress=False,
+                # Bounded concurrency. threads=True lets yfinance open one
+                # connection per symbol, which is the fastest way to get
+                # 429'd on a 500-ticker universe.
+                threads=min(self.max_threads, len(batch)),
+                group_by="column",
                 timeout=self.timeout, label=f"yf.download[{len(batch)}]",
             )
-            if raw is None or len(raw) == 0:
-                continue
-            frames.append(self._normalise_ohlcv(raw, batch))
+
+            # ADAPTIVE PACING:each 429 widens the gap between batches for the
+            # rest of the run. Yahoo's throttle is stateful, so easing off
+            # after the first hit avoids compounding it.
+            if self.rate_limit.hits > before:
+                self.rate_limit.pause_multiplier *= self.backoff_growth
+                self.rate_limit.cooldowns += 1
+                cooldown = self.cooldown_sec + random.uniform(0, self.cooldown_sec * 0.25)
+                log.warning("Rate limited (hit %d/%d) — cooling down %.0fs, "
+                            "then continuing at %.1fs between batches",
+                            self.rate_limit.hits, self.max_429, cooldown,
+                            self.pause * self.rate_limit.pause_multiplier)
+                time.sleep(cooldown)
+
+            if raw is not None and len(raw) > 0:
+                frames.append(self._normalise_ohlcv(raw, batch))
+
             if i + self.batch_size < len(tickers):
-                time.sleep(self.pause)
+                gap = self.pause * self.rate_limit.pause_multiplier
+                # Jitter the inter-batch gap too: a perfectly periodic request
+                # pattern is itself easy to fingerprint and throttle.
+                time.sleep(gap + random.uniform(0, gap * 0.3))
 
         if not frames:
             return pd.DataFrame(columns=["ticker", "date", "open", "high", "low",
@@ -574,6 +695,17 @@ class FutuProvider(Provider):
 # Factory
 # ---------------------------------------------------------------------------
 
+# Roles served by a Provider subclass and therefore configurable/fallback-able.
+# Anything not listed here is a fixed source (FRED, SEC EDGAR) handled by its
+# own module and is not subject to provider fallback.
+PROVIDER_BACKED_ROLES = ("market_data", "fundamentals", "transcripts")
+
+FIXED_SOURCES = {
+    "macro": "FRED",
+    "filings": "SEC EDGAR",
+    "margin_debt": "FINRA (manual CSV)",
+}
+
 REGISTRY: dict[str, type[Provider]] = {
     "yfinance": YFinanceProvider,
     "fmp": FMPProvider,
@@ -647,7 +779,13 @@ def provider_report(cfg) -> list[tuple[str, str, str, str]]:
     that only appears in the log is easy to miss for weeks.
     """
     out: list[tuple[str, str, str, str]] = []
-    for role in ("market_data", "fundamentals", "filings", "macro", "transcripts"):
+    # ONLY roles that actually route through get_provider() / REGISTRY.
+    #
+    # `macro` (FRED) and `filings` (SEC EDGAR) are deliberately excluded: they
+    # are served by dedicated modules, not Provider subclasses, so looking them
+    # up in REGISTRY produced a bogus "unknown provider — fell back to
+    # yfinance" warning. They are reported separately as fixed sources.
+    for role in PROVIDER_BACKED_ROLES:
         requested = cfg.get(f"data.providers.{role}")
         if requested is None:
             continue
