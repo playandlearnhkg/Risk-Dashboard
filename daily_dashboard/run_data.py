@@ -200,18 +200,11 @@ def main() -> int:
         print(stage("4 · Derived ratios (24 per period)"))
         t0 = time.time()
         try:
-            # Market caps come from the latest close x shares outstanding, so
-            # fcf_yield can be computed without another provider round-trip.
-            caps: dict[str, float] = {}
-            for row in db.query(
-                "SELECT r.ticker, r.shares_outstanding, p.close FROM fundamental_ratios r "
-                "JOIN (SELECT ticker, MAX(date) AS d FROM daily_prices GROUP BY ticker) l "
-                "  ON r.ticker = l.ticker "
-                "JOIN daily_prices p ON p.ticker = l.ticker AND p.date = l.d "
-                "WHERE r.shares_outstanding IS NOT NULL"
-            ):
-                if row["shares_outstanding"] and row["close"]:
-                    caps[row["ticker"]] = row["shares_outstanding"] * row["close"]
+            # Market caps for fcf_yield. Sourced from the RAW fundamentals
+            # table, because fundamental_ratios is written by THIS stage and
+            # is empty on a first run — reading it here left fcf_yield NULL
+            # for the whole universe while the run still reported success.
+            caps = fundamentals.market_caps(db)
 
             n = fundamentals.compute_all_ratios(db, equities, cfg, caps)
             msg = f"{n:,} ratio rows · market caps for {len(caps)} tickers"

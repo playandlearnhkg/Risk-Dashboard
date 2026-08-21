@@ -409,6 +409,56 @@ def compute_all_ratios(db, tickers: Iterable[str], cfg,
     return total
 
 
+def market_caps(db, period: str = "quarterly") -> dict[str, float]:
+    """
+    Latest shares outstanding x latest close, per ticker.
+
+    Reads shares outstanding from the RAW `fundamentals` table, NOT from
+    `fundamental_ratios`.
+
+    That distinction is the whole point of this function. Ratios are computed
+    *after* market caps are needed — `compute_all_ratios` takes them as an
+    argument — so on a first run `fundamental_ratios` is still empty, every
+    lookup misses, and `fcf_yield` comes out NULL for the entire universe
+    while the run reports success. The raw table is populated one stage
+    earlier and is always available by the time this is called.
+    """
+    # The raw `item` label is whatever the provider called it, so match on
+    # the same alias list the ratio code uses.
+    aliases = ALIASES.get("shares_outstanding", [])
+    if not aliases:
+        return {}
+    placeholders = ",".join("?" * len(aliases))
+
+    rows = db.query(
+        f"""
+        SELECT f.ticker, f.value AS shares, p.close AS close
+        FROM fundamentals f
+        JOIN (
+            SELECT ticker, MAX(period_end) AS pe
+            FROM fundamentals
+            WHERE period = ? AND item IN ({placeholders}) AND value > 0
+            GROUP BY ticker
+        ) latest ON latest.ticker = f.ticker AND latest.pe = f.period_end
+        JOIN (
+            SELECT ticker, MAX(date) AS d FROM daily_prices GROUP BY ticker
+        ) lp ON lp.ticker = f.ticker
+        JOIN daily_prices p ON p.ticker = lp.ticker AND p.date = lp.d
+        WHERE f.period = ? AND f.item IN ({placeholders}) AND f.value > 0
+        """,
+        (period, *aliases, period, *aliases),
+    )
+
+    caps: dict[str, float] = {}
+    for r in rows:
+        shares, close = r["shares"], r["close"]
+        if shares and close and shares > 0 and close > 0:
+            # Several aliases can match the same period; keep the largest,
+            # which is the total share count rather than a single class.
+            caps[r["ticker"]] = max(caps.get(r["ticker"], 0.0), float(shares) * float(close))
+    return caps
+
+
 def get_latest_ratios(db, period: str = "quarterly") -> pd.DataFrame:
     """Most recent ratio row per ticker — the shape Layer 2 consumes."""
     rows = db.query(

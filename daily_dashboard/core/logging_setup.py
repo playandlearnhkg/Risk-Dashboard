@@ -44,6 +44,27 @@ def setup_logging(level: str = "INFO", log_file: Path | None = None) -> logging.
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
 
+    # WINDOWS ENCODING.
+    #
+    # Python opens both the log file and the console stream with the system
+    # locale encoding, which on a Windows console is a legacy code page
+    # (cp1252). Any non-ASCII character in a log message then raises
+    # UnicodeEncodeError inside the handler — a stack trace mid-run for what
+    # is purely a display concern. Observed on Windows 11 / Python 3.14 with
+    # the arrow in "Provider for market_data -> yfinance".
+    #
+    # `print()` escapes this because CPython writes to a Windows console
+    # through the wide-character API, which is why the banners and box-drawing
+    # characters render fine while logging blows up on the same stream.
+    #
+    # Force UTF-8 on both, with errors="replace" so an un-encodable character
+    # degrades to a placeholder instead of taking down the run.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass                      # not a reconfigurable stream; fine
+
     console = logging.StreamHandler(sys.stdout)
     console.setLevel(getattr(logging, level.upper(), logging.INFO))
     console.setFormatter(logging.Formatter(f"{DIM}%(asctime)s{RESET} %(message)s",
@@ -52,7 +73,7 @@ def setup_logging(level: str = "INFO", log_file: Path | None = None) -> logging.
 
     if log_file:
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        fh = logging.FileHandler(log_file)
+        fh = logging.FileHandler(log_file, encoding="utf-8")
         fh.setLevel(logging.DEBUG)     # file always keeps full detail
         fh.setFormatter(logging.Formatter(
             "%(asctime)s %(levelname)-8s %(name)s | %(message)s"))

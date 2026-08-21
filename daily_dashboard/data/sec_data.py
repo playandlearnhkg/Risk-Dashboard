@@ -39,6 +39,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 import time
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Optional
 
@@ -48,6 +49,14 @@ from core.logging_setup import get_logger
 from data.providers import RateLimiter
 
 log = get_logger("data.sec")
+
+# bs4 raises this when an XML document is handed to an HTML parser. Which is
+# exactly what _section_text does, on purpose. Resolved once at import so the
+# suppression below does not depend on a bs4 version that may not define it.
+try:                                               # bs4 >= 4.11
+    from bs4 import XMLParsedAsHTMLWarning as _XML_AS_HTML_WARNING
+except ImportError:                                # pragma: no cover
+    _XML_AS_HTML_WARNING = UserWarning
 
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 ARCHIVE_URL = "https://www.sec.gov/Archives/edgar/data/{cik}/{accession}/{doc}"
@@ -178,7 +187,15 @@ def _section_text(html: str, kind: str) -> Optional[str]:
     """
     try:
         from bs4 import BeautifulSoup
-        text = BeautifulSoup(html, "lxml").get_text(" ", strip=True)
+        # Parsed as HTML deliberately, even when the document turns out to be
+        # XML. All this function wants is the visible text, and the HTML
+        # parser is the tolerant one -- EDGAR filings routinely have unclosed
+        # tags that a strict XML parse rejects outright. bs4 warns about the
+        # mismatch (XMLParsedAsHTMLWarning); here it is noise, not a defect,
+        # so it is silenced at the call site rather than globally.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", _XML_AS_HTML_WARNING)
+            text = BeautifulSoup(html, "lxml").get_text(" ", strip=True)
     except Exception:                              # noqa: BLE001
         text = re.sub(r"<[^>]+>", " ", html)
     text = re.sub(r"\s+", " ", text)
@@ -274,7 +291,12 @@ def _parse_form4(xml_text: str, ticker: str, accession: str,
             return None
 
     rows: list[dict] = []
-    for txn in soup.find_all("nonDerivativeTransaction"):
+    # `line_no` is the transaction's position in the document and is half the
+    # primary key. Taken from enumerate rather than len(rows) so that a skipped
+    # row does not shift every line number after it -- re-ingesting the same
+    # filing must produce the same keys, or the rows duplicate instead of
+    # updating.
+    for line_no, txn in enumerate(soup.find_all("nonDerivativeTransaction")):
         code_el = txn.find("transactionCode")
         code = code_el.get_text(strip=True).upper() if code_el else ""
 
@@ -302,7 +324,7 @@ def _parse_form4(xml_text: str, ticker: str, accession: str,
         value_usd = signed * price if price else None
 
         rows.append({
-            "accession": accession, "ticker": ticker,
+            "accession": accession, "line_no": line_no, "ticker": ticker,
             "insider_name": name or "unknown",
             "insider_title": title,
             "is_senior": int(is_senior),
@@ -319,10 +341,14 @@ def _parse_form4(xml_text: str, ticker: str, accession: str,
 
 
 INSIDER_COLUMNS = [
-    "accession", "ticker", "insider_name", "insider_title", "is_senior",
-    "is_director", "transaction_date", "code", "is_signal", "shares",
-    "price", "value_usd", "shares_after", "filed_date",
+    "accession", "line_no", "ticker", "insider_name", "insider_title",
+    "is_senior", "is_director", "transaction_date", "code", "is_signal",
+    "shares", "price", "value_usd", "shares_after", "filed_date",
 ]
+# Position of is_signal in INSIDER_COLUMNS, used when counting signal rows
+# from the tuples. Derived rather than hard-coded -- it was an index literal,
+# and it silently pointed at the wrong column the moment a column was added.
+_IS_SIGNAL_IDX = INSIDER_COLUMNS.index("is_signal")
 
 
 # ---------------------------------------------------------------------------
@@ -428,7 +454,8 @@ def ingest(db, cfg, tickers: Iterable[str], client: Optional[SECClient] = None,
         if insider_rows:
             written = db.upsert_many("insider_transactions", INSIDER_COLUMNS, insider_rows)
             stats.insider_rows += written
-            stats.signal_rows += sum(1 for r in insider_rows if r[8] == 1)
+            stats.signal_rows += sum(
+                1 for r in insider_rows if r[_IS_SIGNAL_IDX] == 1)
 
         stats.tickers_processed += 1
 

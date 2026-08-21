@@ -22,6 +22,45 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
+
+def _insider_table_ddl(name: str = "insider_transactions") -> str:
+    """
+    DDL for `insider_transactions`, parameterised by table name.
+
+    Named rather than inlined because the primary-key migration has to build
+    this table a second time under a temporary name, and two copies of a
+    fifteen-column DDL is exactly how a migration ends up writing a table that
+    does not match the schema.
+
+    ON line_no. It is the transaction's position within its Form 4 document,
+    and it is part of the key on purpose. A single Form 4 legitimately reports
+    the same (date, code, shares, price) more than once -- a sale executed in
+    several fills at one price, or an award split across plans, is filed as
+    separate rows. Under the previous key those rows collided and INSERT OR
+    REPLACE silently collapsed them into one, understating both the share
+    count and the dollar flow. Observed as 153 parsed but 152 stored.
+    """
+    return f"""
+CREATE TABLE IF NOT EXISTS {name} (
+    accession       TEXT NOT NULL,
+    line_no         INTEGER NOT NULL DEFAULT 0,
+    ticker          TEXT NOT NULL,
+    insider_name    TEXT,
+    insider_title   TEXT,
+    is_senior       INTEGER DEFAULT 0,   -- CEO/CFO/President/Chairman
+    is_director     INTEGER DEFAULT 0,
+    transaction_date TEXT,
+    code            TEXT,                -- P, S, A, M, F ...
+    is_signal       INTEGER DEFAULT 0,   -- 1 only for open-market P and S
+    shares          REAL,
+    price           REAL,
+    value_usd       REAL,
+    shares_after    REAL,
+    filed_date      TEXT,
+    PRIMARY KEY (accession, line_no)
+);"""
+
+
 SCHEMA = """
 -- ---------------------------------------------------------------- universe
 CREATE TABLE IF NOT EXISTS universe (
@@ -122,23 +161,7 @@ CREATE TABLE IF NOT EXISTS filing_sections (
     PRIMARY KEY (accession, section)
 );
 
-CREATE TABLE IF NOT EXISTS insider_transactions (
-    accession       TEXT NOT NULL,
-    ticker          TEXT NOT NULL,
-    insider_name    TEXT,
-    insider_title   TEXT,
-    is_senior       INTEGER DEFAULT 0,   -- CEO/CFO/President/Chairman
-    is_director     INTEGER DEFAULT 0,
-    transaction_date TEXT,
-    code            TEXT,                -- P, S, A, M, F ...
-    is_signal       INTEGER DEFAULT 0,   -- 1 only for open-market P and S
-    shares          REAL,
-    price           REAL,
-    value_usd       REAL,
-    shares_after    REAL,
-    filed_date      TEXT,
-    PRIMARY KEY (accession, insider_name, transaction_date, code, shares, price)
-);
+{insider_table}
 CREATE INDEX IF NOT EXISTS ix_insider_ticker ON insider_transactions(ticker, transaction_date);
 
 -- ------------------------------------------------------ institutional 13-F
@@ -231,7 +254,7 @@ CREATE TABLE IF NOT EXISTS ingest_log (
     finished_at TEXT,
     PRIMARY KEY (run_id, stage)
 );
-"""
+""".format(insider_table=_insider_table_ddl())
 
 
 class Database:
@@ -282,6 +305,60 @@ class Database:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
             except sqlite3.Error:
                 pass                           # raced with another writer
+
+        self._rebuild_insider_table(conn)
+
+    def _rebuild_insider_table(self, conn: sqlite3.Connection) -> None:
+        """
+        Move `insider_transactions` onto its (accession, line_no) primary key.
+
+        SQLite cannot ALTER a PRIMARY KEY, so an existing database keeps the
+        old key -- (accession, insider_name, transaction_date, code, shares,
+        price) -- and keeps losing duplicate transaction lines on every
+        ingest. The only fix is a table rebuild.
+
+        Rows already in the database were themselves de-duplicated by the old
+        key, so lines lost before this migration are gone; re-fetching those
+        Form 4s restores them. What this guarantees is that no FUTURE ingest
+        drops a line.
+
+        Copy-then-swap, inside an EXPLICIT transaction. Both details matter.
+        Python's sqlite3 only opens a transaction for DML, so DDL otherwise
+        runs in autocommit and a failure halfway through would leave the
+        database with the old table dropped and the new one half-filled. The
+        explicit BEGIN makes the whole swap land or not at all. executescript
+        is avoided here for the same reason -- it commits before it runs.
+        """
+        try:
+            info = conn.execute(
+                "PRAGMA table_info(insider_transactions)").fetchall()
+        except sqlite3.Error:
+            return
+        if not info or any(row["name"] == "line_no" for row in info):
+            return                             # fresh table, or already done
+
+        col_list = ",".join(row["name"] for row in info)
+        conn.execute("BEGIN")
+        try:
+            conn.execute(_insider_table_ddl("insider_transactions_new"))
+            # ROW_NUMBER over rowid preserves the filing's original row order,
+            # so line_no matches the order the parser produced.
+            conn.execute(
+                f"INSERT INTO insider_transactions_new ({col_list}, line_no) "
+                f"SELECT {col_list}, "
+                f"ROW_NUMBER() OVER (PARTITION BY accession ORDER BY rowid) - 1 "
+                f"FROM insider_transactions"
+            )
+            conn.execute("DROP INDEX IF EXISTS ix_insider_ticker")
+            conn.execute("DROP TABLE insider_transactions")
+            conn.execute("ALTER TABLE insider_transactions_new "
+                         "RENAME TO insider_transactions")
+            conn.execute("CREATE INDEX IF NOT EXISTS ix_insider_ticker "
+                         "ON insider_transactions(ticker, transaction_date)")
+            conn.commit()
+        except sqlite3.Error:
+            conn.rollback()
+            raise
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
