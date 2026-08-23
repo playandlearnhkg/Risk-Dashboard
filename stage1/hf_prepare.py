@@ -81,14 +81,50 @@ def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def to_new_york(ts: pd.Series) -> pd.DatetimeIndex:
-    """HF stamps may be epoch, UTC, or naive. Land them all in exchange time."""
+    """
+    HF stamps may be epoch, offset-aware, or naive. Land them all in exchange
+    time.
+
+    NAIVE STAMPS ARE THE TRAP. An earlier version parsed them with utc=True and
+    then converted, which treats a naive 09:30 New York stamp as 09:30 UTC and
+    silently moves every bar back five hours. Nothing errors; the series just
+    lands in pre-market, the RTH filter keeps the wrong bars, and every feature
+    is computed on the wrong candles.
+
+    So naive input is not assumed either way - the modal session start decides:
+    a session starting near 09:30 is already exchange-local; one starting near
+    13:30 or 14:30 is UTC (New York +5 in winter, +4 in summer). Anything else
+    raises rather than guessing.
+    """
     if pd.api.types.is_integer_dtype(ts) or pd.api.types.is_float_dtype(ts):
-        unit = "ms" if ts.iloc[0] > 1e11 else "s"
+        v = float(ts.dropna().iloc[0])
+        unit = "s" if abs(v) < 1e11 else "ms" if abs(v) < 1e14 else "us"
         idx = pd.DatetimeIndex(pd.to_datetime(ts.astype("int64"), unit=unit, utc=True))
         return idx.tz_convert("America/New_York")
 
-    parsed = pd.to_datetime(ts, format="mixed", utc=True)
-    return pd.DatetimeIndex(parsed).tz_convert("America/New_York")
+    if pd.api.types.is_datetime64_any_dtype(ts) and getattr(ts.dtype, "tz", None):
+        return pd.DatetimeIndex(ts).tz_convert("America/New_York")
+
+    naive = pd.DatetimeIndex(pd.to_datetime(ts, format="mixed"))
+    if naive.tz is not None:
+        return naive.tz_convert("America/New_York")
+
+    minutes = naive.hour * 60 + naive.minute
+    modal_start = int(pd.Series(minutes, index=naive)
+                      .groupby(naive.normalize()).min().mode().iloc[0])
+
+    if 9 * 60 <= modal_start <= 10 * 60:                 # already New York
+        return naive.tz_localize("America/New_York",
+                                 nonexistent="shift_forward", ambiguous="NaT")
+    if 13 * 60 <= modal_start <= 15 * 60:                # UTC
+        return naive.tz_localize("UTC").tz_convert("America/New_York")
+
+    raise ValueError(
+        f"naive timestamps whose modal session start is "
+        f"{modal_start // 60:02d}:{modal_start % 60:02d} match neither "
+        f"exchange-local (~09:30) nor UTC (~13:30/14:30). Establish the "
+        f"timezone from the vendor before resampling."
+    )
 
 
 def detect_one_minute_label(idx: pd.DatetimeIndex) -> str:

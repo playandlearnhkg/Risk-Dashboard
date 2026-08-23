@@ -449,6 +449,36 @@ def test_inspect_flags_forward_filled_bars():
     assert any("synthetic fill" in f for f in flags), f"no fill flag: {flags}"
 
 
+
+def test_to_new_york_localises_naive_exchange_stamps():
+    """
+    Regression: naive New York stamps parsed as UTC land five hours early, in
+    pre-market. Nothing errors - the whole study is just computed on the wrong
+    candles.
+    """
+    from stage1 import hf_prepare
+
+    naive = pd.Series(pd.date_range("2019-01-02 09:30", periods=390, freq="1min"))
+    idx = hf_prepare.to_new_york(naive)
+    assert str(idx.tz) == "America/New_York"
+    assert idx[0].strftime("%H:%M") == "09:30", f"shifted to {idx[0]}"
+
+    utc = pd.Series(pd.date_range("2019-01-02 14:30", periods=390, freq="1min"))
+    idx2 = hf_prepare.to_new_york(utc)
+    assert idx2[0].strftime("%H:%M") == "09:30", f"UTC stamps not converted: {idx2[0]}"
+
+
+def test_to_new_york_refuses_unrecognised_offset():
+    from stage1 import hf_prepare
+    weird = pd.Series(pd.date_range("2019-01-02 03:15", periods=100, freq="1min"))
+    try:
+        hf_prepare.to_new_york(weird)
+    except ValueError as exc:
+        assert "neither" in str(exc)
+    else:
+        raise AssertionError("accepted an unrecognisable timezone instead of raising")
+
+
 if __name__ == "__main__":
     passed = failed = 0
     for name, fn in sorted(globals().items()):

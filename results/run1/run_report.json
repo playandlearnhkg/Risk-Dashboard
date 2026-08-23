@@ -1,0 +1,99 @@
+{
+  "run": "stage1-run1-hfdatalibrary",
+  "date_utc": "2026-08-21",
+  "environment": {
+    "python": "3.11.15",
+    "platform": "Linux-6.18.44-fc-v21-x86_64-with-glibc2.39",
+    "git_commit": "1e25eac93b827d8f6275f21b636a3e849cee21c1-dirty",
+    "numpy": "2.4.6",
+    "pandas": "3.0.5",
+    "pyarrow": "25.0.1",
+    "yaml": "6.0.1"
+  },
+  "prereg_status": "FROZEN_ANALYSIS",
+  "source": "hfdatalibrary.com",
+  "window": "2006-01-01 .. 2022-02-28 (pre-IEX-break, per frozen prereg)",
+  "outcome": "STOPPED_AT_STEP_1_VALIDATE",
+  "steps": [
+    {
+      "step": "hf_quality",
+      "status": "completed",
+      "finding": "IEX break material on SPY/GLD/FXE; pre-break window retained"
+    },
+    {
+      "step": "hf_prepare",
+      "status": "completed after a code fix",
+      "finding": "1-min label detected as OPEN on all four; naive stamps are exchange-local New York, not UTC"
+    },
+    {
+      "step": "validate",
+      "status": "FAILED",
+      "finding": "3 of 4 frozen instruments exceed invalid_bar_abort_threshold"
+    },
+    {
+      "step": "power",
+      "status": "not run - gated"
+    },
+    {
+      "step": "gates",
+      "status": "not run - gated"
+    },
+    {
+      "step": "step5",
+      "status": "NOT RUN - no IC was computed at any point"
+    }
+  ],
+  "validated_degenerate_fraction": {
+    "SPY": {
+      "frac": 0.0387,
+      "empty_grid": 11158,
+      "zero_range": 18,
+      "verdict": "PASS"
+    },
+    "IWM": {
+      "frac": 0.0421,
+      "empty_grid": 11749,
+      "zero_range": 33,
+      "verdict": "PASS"
+    },
+    "DIA": {
+      "frac": 0.0542,
+      "empty_grid": 12070,
+      "zero_range": 168,
+      "verdict": "FAIL"
+    },
+    "QQQ": {
+      "frac": 0.0558,
+      "empty_grid": 11805,
+      "zero_range": 119,
+      "verdict": "FAIL"
+    },
+    "GLD": {
+      "frac": 0.0582,
+      "empty_grid": 12506,
+      "zero_range": 6,
+      "verdict": "FAIL"
+    },
+    "TLT": {
+      "frac": 0.1519,
+      "empty_grid": 31122,
+      "zero_range": 1459,
+      "verdict": "FAIL"
+    },
+    "SLV": {
+      "frac": 0.4695,
+      "empty_grid": 21359,
+      "zero_range": 1467,
+      "verdict": "FAIL"
+    },
+    "FXE": {
+      "frac": 0.6608,
+      "empty_grid": 177302,
+      "zero_range": 424,
+      "verdict": "FAIL"
+    }
+  },
+  "n_trials_executed": 0,
+  "n_trials_note": "No hypothesis test ran. Steps 1-3 are data audits; the trial counter measures IC/bucket/quadrant tests and stays at 0. Incrementing it would misrepresent the record.",
+  "correction": "The est_5min_drop column previously recorded in the pre-registration was derived from daily gap_rate assuming independent missing minutes. It materially UNDERSTATES the realised degenerate fraction because gaps cluster within sessions: SPY predicted 0.00% vs 3.87% actual, GLD 0.15% vs 5.82%, TLT 10.4% vs 15.2%. Screening on gap_rate is not a substitute for running prepare+validate."
+}

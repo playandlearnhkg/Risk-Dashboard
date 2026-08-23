@@ -37,21 +37,17 @@ history_option: A        # min_obs 250, W 500, blocks of 63, ~7 years/instrument
 data:
   manifest_status: PENDING_VALIDATION   # -> VERIFIED once stage1.validate passes
 
-  # SUBSTITUTED 2026-08-21, on measured data quality, BEFORE any IC, bucket or
-  # quadrant number was computed. The original set was SPY / TLT / GLD / FXE,
-  # chosen for four distinct macro drivers. Two of those four cannot produce
-  # valid 5-minute bars from this source (see instrument_quality_evidence).
-  #
-  # Admission rule, applied uniformly: a instrument is admissible only if its
-  # PRE-BREAK estimated share of 5-minute bins failing the >=4-of-5-minutes
-  # rule is below max_drop_fraction (0.02). The rule was already in the
-  # pre-registration; it is applied here rather than relaxed to admit a
-  # preferred ticker.
+  # ORIGINAL FROZEN SET, retained by operator instruction 2026-08-21.
+  # Data-quality measurements below suggest TLT and FXE will fail the
+  # admission gates, but the DECISION IS DEFERRED TO THE PIPELINE: the
+  # validator's degenerate-bar limit decides, not a judgement call made in
+  # advance. If a gate fires, a substitute is proposed at that point, on data
+  # adequacy only, and before any IC is computed.
   instruments:
-    - SPY      # US large-cap equity   gap_pre 0.0003
-    - IWM      # US small-cap equity   gap_pre 0.0134
-    - GLD      # gold                  gap_pre 0.0126
-    - SLV      # silver                gap_pre 0.0342
+    - SPY      # US large-cap equity
+    - TLT      # long duration rates
+    - GLD      # gold
+    - FXE      # EUR/USD
 
   # Measured with stage1.hf_quality on 2026-08-21. gap_pre / gap_post are mean
   # daily gap rate (fraction of the 390-bar grid with no trade) before and
@@ -79,15 +75,22 @@ data:
       FXE: {gap_pre: 0.4728, est_5min_drop: 0.7766, reason: "ORIGINAL PICK; unusable.
              Only 205 of 390 minutes trade pre-break, 17.6 post-break"}
 
-  # CONSEQUENCE, recorded because it weakens the study and must not be quietly
-  # dropped: no rates, credit or FX instrument in this library survives the
-  # admission rule at 1-minute resolution. The surviving set is two equity
-  # ETFs and two metals ETFs, so rho_bar will be far higher than the original
-  # four-macro-driver design intended and K_eff is expected near 2, not 4.
-  # That is acceptable ONLY because the pre-break history is long (>4,000
-  # sessions per instrument, >60 evaluation blocks against the 20 required),
-  # so power comes from length rather than breadth. Step 2 measures the actual
-  # K_eff; if it reports underpowered, the verdict is B and the study stops.
+  # CORRECTION 2026-08-21: est_5min_drop below was derived from daily gap_rate
+  # assuming independent missing minutes. It materially UNDERSTATES the
+  # realised degenerate fraction because gaps cluster within sessions. Measured
+  # by running prepare+validate: SPY 3.87% (predicted 0.00%), IWM 4.21%,
+  # DIA 5.42%, QQQ 5.58%, GLD 5.82% (predicted 0.15%), TLT 15.19% (predicted
+  # 10.43%), SLV 46.95%, FXE 66.08%. Screening on gap_rate is not a substitute
+  # for running the pipeline.
+  #
+  # RUN 1 OUTCOME (results/run1/run_report.json): validate REJECTED TLT, GLD
+  # and FXE. Only SPY and IWM clear invalid_bar_abort_threshold, and both are
+  # US equity, so the achievable K_eff is near 1. No IC was computed.
+  #
+  # These measurements are EVIDENCE, not a decision. The pipeline decides:
+  # stage1.validate aborts an instrument whose degenerate-bar share exceeds
+  # invalid_bar_abort_threshold (0.05). Whatever survives that gate is the
+  # universe, and Step 2 then measures the real K_eff.
   base_timeframe: 5min        # FROZEN
   secondary_timeframe: 1min   # FROZEN (used only in execution step 11)
 
@@ -113,14 +116,12 @@ data:
     - "Vendor flags a survivor-biased universe pre-2022. Stage 1 names four
        surviving ETFs rather than screening, so no selection is performed on
        the data, but results generalise to major liquid ETFs only."
-    - "NARROWER THAN INTENDED: no rates, credit or FX instrument survives the
-       data-quality admission rule, so the surviving set is two equity ETFs
-       and two metals ETFs. A result generalises to liquid US equity and
-       metals ETFs in the pre-2022 consolidated-tape era, and to nothing
-       wider. The original four-macro-driver design was not achievable from
-       this source."
-    - "K_eff is expected near 2 rather than 4, because SPY/IWM and GLD/SLV are
-       correlated pairs. Power therefore rests on history length, not breadth."
+    - "MEASURED RISK to the four-macro-driver design: no rates, credit or FX
+       instrument in this library clears the data-quality admission rule at
+       1-minute resolution (TLT 10.4% estimated bin drop, IEF 42.7%, UUP
+       57.8%, FXE 77.7%). If the validator rejects TLT and FXE, the surviving
+       set is equity plus metals only, K_eff falls toward 2, and any result
+       generalises no wider than liquid US equity and metals ETFs."
 
   # Resampling rules, fixed before any result. 1-min -> 5-min.
   resampling:
