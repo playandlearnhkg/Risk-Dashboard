@@ -23,7 +23,7 @@ from dataclasses import asdict, dataclass, field
 import numpy as np
 import pandas as pd
 
-from stage1 import core, io
+from stage1 import core, io, provenance
 
 # Abort thresholds, from the pre-registration.
 MAX_INVALID_FRACTION = 0.05
@@ -350,7 +350,8 @@ def main(argv: list[str] | None = None) -> int:
 
     stamp = out_dir / "data_manifest.json"
     with open(stamp, "w") as fh:
-        json.dump({"instruments": manifest_out,
+        json.dump({"environment": provenance.environment_stamp(),
+                   "instruments": manifest_out,
                    "audits": [asdict(a) for a in audits]}, fh, indent=2)
 
     print(f"  VALIDATION PASSED for {len(frames)} instrument(s)")

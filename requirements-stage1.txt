@@ -1,0 +1,15 @@
+# Stage 1 predictivity test — pinned for reproducibility (spec 5.6).
+#
+# Two independent runs must produce byte-identical output. Library upgrades
+# silently change rank-tie handling and rolling-window edge cases, so the
+# versions are part of the result, not an implementation detail. The versions
+# actually used are stamped into results/<run>/run_report.json by
+# stage1.run_all — if they differ from these, the run is not comparable.
+#
+#   python -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements-stage1.txt
+
+numpy==2.4.6
+pandas==3.0.5
+pyarrow>=17.0.0      # parquet only
+PyYAML>=6.0          # manifest and pre-registration only
