@@ -368,6 +368,87 @@ def test_forward_return_is_nan_across_a_hole():
     assert strict.iloc[0] == 1.0, "a correctly spaced bar was rejected"
 
 
+
+# ---------------------------------------------------------------------------
+# Local-file inspection
+# ---------------------------------------------------------------------------
+
+def _write_probe(tmp, name, tz_convert=None, label_shift=0, fill_frac=0.0,
+                 epoch=None):
+    import pathlib as _p
+    df = core.synthetic_bars(n_sessions=40, seed=17)
+    rng = np.random.default_rng(2)
+    df["volume"] = rng.integers(1000, 90000, len(df))
+
+    if fill_frac:
+        hit = rng.choice(len(df), size=int(fill_frac * len(df)), replace=False)
+        for i in sorted(hit):
+            if i > 0:
+                df.iloc[i] = [df.iloc[i - 1]["close"]] * 4 + [0]
+
+    idx = df.index.tz_localize("America/New_York")
+    if label_shift:
+        idx = idx + pd.Timedelta(minutes=label_shift)
+    out = df.copy()
+
+    if epoch:
+        out.index = idx
+        emit = out.reset_index(names="timestamp")
+        emit["timestamp"] = emit["timestamp"].map(lambda t: int(t.timestamp()))
+    else:
+        out.index = idx.tz_convert(tz_convert).tz_localize(None) if tz_convert else idx
+        emit = out.reset_index(names="timestamp")
+        emit["timestamp"] = emit["timestamp"].map(
+            lambda t: t.isoformat() if hasattr(t, "isoformat") else str(t))
+
+    path = _p.Path(tmp) / name
+    emit.to_csv(path, index=False)
+    return path
+
+
+def test_inspect_reads_prices_not_nan(tmp_path=None):
+    """
+    Regression: passing a Series that still carries the file's RangeIndex
+    against a DatetimeIndex makes pandas ALIGN them, silently turning every
+    price into NaN. Every price-based diagnostic then reports a cheerful zero.
+    """
+    import tempfile
+    from stage1 import inspect as insp
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_probe(tmp, "AAA_5min.csv", epoch=True)
+        d = insp.describe(path, bar_minutes=5)
+
+    assert d["timestamp_form"] == "epoch_s"
+    assert d["bar_label"] == "open"
+    assert np.isfinite(d["inferred_tick"]), "prices came through as NaN"
+    assert abs(d["inferred_tick"] - 0.01) < 1e-6
+
+
+def test_inspect_detects_close_labelled_and_utc():
+    import tempfile
+    from stage1 import inspect as insp
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_probe(tmp, "BBB_5min.csv", label_shift=5)
+        d = insp.describe(path, bar_minutes=5)
+    assert d["bar_label"] == "close"
+
+
+def test_inspect_flags_forward_filled_bars():
+    import tempfile
+    from stage1 import inspect as insp
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = _write_probe(tmp, "CCC_5min.csv", fill_frac=0.03)
+        d = insp.describe(path, bar_minutes=5)
+
+    assert d["zero_range"] > 0.01 * d["rows_rth"], "filled bars not detected"
+    flags = insp._flags(d)
+    assert any("high == low" in f for f in flags), f"no zero-range flag: {flags}"
+    assert any("synthetic fill" in f for f in flags), f"no fill flag: {flags}"
+
+
 if __name__ == "__main__":
     passed = failed = 0
     for name, fn in sorted(globals().items()):

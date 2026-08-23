@@ -55,6 +55,9 @@ class InstrumentAudit:
     repeated_ohlc_runs: int = 0
     zero_volume_bars: int = 0
     suspect_split_gaps: int = 0
+    session_open_equals_prior_close: int = 0
+    grid_holes: int = 0
+    grid_hole_fraction: float = 0.0
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -193,10 +196,59 @@ def audit_instrument(spec: io.InstrumentSpec, bar_minutes: int) -> tuple[pd.Data
                 f"synthetic fills"
             )
 
-    # --- Adjustment sanity --------------------------------------------------
-    # Overnight gaps beyond ~20% usually mean an unadjusted split.
+    # --- Provenance of a PRE-AGGREGATED series ------------------------------
+    # When the 5-minute bars were built by someone else, the five resampling
+    # decisions in DATA_SCHEMA.md 7a were made out of our sight. Two of them
+    # leave detectable fingerprints in the bars themselves.
+
     session_first = df.groupby(sessions)["open"].first()
     session_last = df.groupby(sessions)["close"].last()
+
+    # (a) Did an aggregation bin straddle the overnight gap? If it did, the
+    # first bar of a session begins where the previous one ended, so its open
+    # equals the prior close far more often than chance allows. A genuine
+    # overnight gap almost always moves the price at least one tick.
+    # Thresholds are deliberately loose. Genuine boundary-crossing aggregation
+    # shows up at near 100%, because EVERY session would carry over. Low-priced
+    # instruments collide by rounding alone at up to ~10%, so a tight threshold
+    # would fire on clean data and train the reader to ignore it.
+    exact_carry = (session_first == session_last.shift())
+    a.session_open_equals_prior_close = int(exact_carry.sum())
+    carry_frac = a.session_open_equals_prior_close / max(1, len(session_first) - 1)
+    if carry_frac > 0.40:
+        a.errors.append(
+            f"{carry_frac:.0%} of sessions open exactly at the prior close. "
+            f"The upstream aggregation is spanning the overnight gap, so the "
+            f"first bar of each session is not a 5-minute bar."
+        )
+    elif carry_frac > 0.15:
+        a.warnings.append(
+            f"{carry_frac:.0%} of sessions open exactly at the prior close. "
+            f"Rounding collisions explain up to ~10% on low-priced names; above "
+            f"that, check how the 5-minute bars were built."
+        )
+
+    # (b) How much of each session's grid is actually present? Missing bars are
+    # not a bias - forward returns across a hole are already NaN by the strict
+    # spacing rule - but they cost sample, and heavy holing means the
+    # instrument is thin at this timeframe.
+    span = df.groupby(sessions).apply(
+        lambda g: int((g.index[-1] - g.index[0]).total_seconds() // 60 // bar_minutes) + 1,
+        include_groups=False,
+    )
+    present = df.groupby(sessions).size()
+    a.grid_holes = int((span - present).clip(lower=0).sum())
+    a.grid_hole_fraction = a.grid_holes / max(1, int(span.sum()))
+    if a.grid_hole_fraction > 0.02:
+        a.warnings.append(
+            f"{a.grid_hole_fraction:.2%} of the session grid is missing "
+            f"({a.grid_holes:,} absent bars). Forward returns across a hole are "
+            f"correctly dropped, so this costs sample rather than biasing it - "
+            f"but Step 2 will show the cost in n_eff."
+        )
+
+    # --- Adjustment sanity --------------------------------------------------
+    # Overnight gaps beyond ~20% usually mean an unadjusted split.
     overnight = (session_first / session_last.shift() - 1.0).abs()
     a.suspect_split_gaps = int((overnight > 0.20).sum())
     if a.suspect_split_gaps:
@@ -240,6 +292,8 @@ def _print_audit(a: InstrumentAudit) -> None:
           f"   zero-range: {a.zero_range_bars:,}   empty-grid: {a.missing_bars:,}")
     print(f"    duplicates dropped    : {a.duplicates_dropped:,}"
           f"   repeated OHLC: {a.repeated_ohlc_runs:,}")
+    print(f"    grid holes            : {a.grid_holes:,} ({a.grid_hole_fraction:.2%})"
+          f"   session open == prior close: {a.session_open_equals_prior_close:,}")
     for w in a.warnings:
         print(f"    WARN  {w}")
     for e in a.errors:
