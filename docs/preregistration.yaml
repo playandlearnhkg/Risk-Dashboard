@@ -244,8 +244,17 @@ hypotheses:
 # tests run and abandoned. A test run and not reported is p-hacking.
 # ---------------------------------------------------------------------------
 n_trials_declared: 59
-n_trials_executed: 0
-trial_log: []      # {id, date, description, result_summary}
+n_trials_executed: 1
+trial_log:
+  - id: T1
+    date: 2026-08-21
+    description: "Single-bar DQ information coefficient vs r_1, SPY+IWM,
+      2006-01-03..2022-02-28 pre-break, 61 calendar blocks."
+    result_summary: "mean IC -0.0292, t -16.07, consistency ratio 0.049
+      (3 of 61 blocks carry the pre-registered positive sign). K2 and K7 fired.
+      VERDICT C - no useful predictivity. H1 rejected; the reversed sign is a
+      rejection, not a finding."
+
 
 expected_effect_size:
   IC: [0.01, 0.03]

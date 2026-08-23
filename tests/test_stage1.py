@@ -479,6 +479,20 @@ def test_to_new_york_refuses_unrecognised_offset():
         raise AssertionError("accepted an unrecognisable timezone instead of raising")
 
 
+
+def test_g4_rejects_a_negative_gradient():
+    """
+    Spec 6 writes G4 as signed rho >= 0.60. A steep negative gradient is
+    monotone the WRONG way; crediting it would let a rejected hypothesis
+    collect a passing gate.
+    """
+    r = _detected_results()
+    r.update(bucket_spearman=-0.85, jt_p=0.0001)
+    gates, _ = stats.evaluate_gates(r)
+    g4 = next(g for g in gates if g.code == "G4")
+    assert g4.passed is False, "G4 credited a negative monotone gradient"
+
+
 if __name__ == "__main__":
     passed = failed = 0
     for name, fn in sorted(globals().items()):

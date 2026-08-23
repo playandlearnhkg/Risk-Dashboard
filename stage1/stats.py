@@ -358,8 +358,13 @@ def evaluate_gates(results: dict) -> tuple[list[Gate], str]:
         _none_or(lambda v: abs(v) >= 3.0, ic_t))
     add("G3", "consistency ratio >= 0.65", consistency,
         _none_or(lambda v: v >= 0.65, consistency))
-    add("G4", "JT p < 0.05 and bucket rho >= 0.60", (jt_p, bucket_rho),
-        _none_or(lambda p, r: p < 0.05 and abs(r) >= 0.60, jt_p, bucket_rho))
+    # Spec 6 writes "bucket-index Spearman rho >= 0.60", SIGNED, not |rho|.
+    # The pre-registered H1 fixes the direction: higher DQ implies higher
+    # forward return. A steep NEGATIVE gradient is monotone, but it is monotone
+    # the wrong way, and crediting it here would let a rejected hypothesis
+    # collect a passing gate on its way to being reported as a finding.
+    add("G4", "JT p < 0.05 and bucket rho >= +0.60 (signed)", (jt_p, bucket_rho),
+        _none_or(lambda p, r: p < 0.05 and r >= 0.60, jt_p, bucket_rho))
     add("G5", "H2 > 0, CI excludes 0, H1 ordering holds", (h2, h2_lo, h2_hi, h1_ok),
         _none_or(lambda v, lo, hi, o: v > 0 and lo > 0 and bool(o),
                  h2, h2_lo, h2_hi, h1_ok))

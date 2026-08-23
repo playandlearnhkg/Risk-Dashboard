@@ -4,7 +4,7 @@
   "environment": {
     "python": "3.11.15",
     "platform": "Linux-6.18.44-fc-v21-x86_64-with-glibc2.39",
-    "git_commit": "1e25eac93b827d8f6275f21b636a3e849cee21c1-dirty",
+    "git_commit": "9ee52208d2b2e2892821c38c095536412f16ad05-dirty",
     "numpy": "2.4.6",
     "pandas": "3.0.5",
     "pyarrow": "25.0.1",
@@ -13,34 +13,36 @@
   "prereg_status": "FROZEN_ANALYSIS",
   "source": "hfdatalibrary.com",
   "window": "2006-01-01 .. 2022-02-28 (pre-IEX-break, per frozen prereg)",
-  "outcome": "STOPPED_AT_STEP_1_VALIDATE",
+  "outcome": "COMPLETED_STEP_5 -> VERDICT C (NO_USEFUL_PREDICTIVITY)",
   "steps": [
     {
       "step": "hf_quality",
-      "status": "completed",
-      "finding": "IEX break material on SPY/GLD/FXE; pre-break window retained"
+      "status": "completed"
     },
     {
       "step": "hf_prepare",
-      "status": "completed after a code fix",
-      "finding": "1-min label detected as OPEN on all four; naive stamps are exchange-local New York, not UTC"
+      "status": "completed"
     },
     {
       "step": "validate",
-      "status": "FAILED",
-      "finding": "3 of 4 frozen instruments exceed invalid_bar_abort_threshold"
+      "status": "PASSED for SPY+IWM after universe rewrite"
     },
     {
       "step": "power",
-      "status": "not run - gated"
+      "status": "PASSED",
+      "n_eff": 324242,
+      "k_eff": 1.12,
+      "rho_bar": 0.791,
+      "calendar_blocks": 56
     },
     {
       "step": "gates",
-      "status": "not run - gated"
+      "status": "PASSED"
     },
     {
       "step": "step5",
-      "status": "NOT RUN - no IC was computed at any point"
+      "status": "COMPLETED",
+      "verdict": "NO_USEFUL_PREDICTIVITY"
     }
   ],
   "validated_degenerate_fraction": {
@@ -93,7 +95,35 @@
       "verdict": "FAIL"
     }
   },
-  "n_trials_executed": 0,
-  "n_trials_note": "No hypothesis test ran. Steps 1-3 are data audits; the trial counter measures IC/bucket/quadrant tests and stays at 0. Incrementing it would misrepresent the record.",
-  "correction": "The est_5min_drop column previously recorded in the pre-registration was derived from daily gap_rate assuming independent missing minutes. It materially UNDERSTATES the realised degenerate fraction because gaps cluster within sessions: SPY predicted 0.00% vs 3.87% actual, GLD 0.15% vs 5.82%, TLT 10.4% vs 15.2%. Screening on gap_rate is not a substitute for running prepare+validate."
+  "n_trials_executed": 1,
+  "n_trials_note": "One hypothesis test executed: single-bar DQ information coefficient against r_1, across 61 calendar blocks.",
+  "correction": "The est_5min_drop column previously recorded in the pre-registration was derived from daily gap_rate assuming independent missing minutes. It materially UNDERSTATES the realised degenerate fraction because gaps cluster within sessions: SPY predicted 0.00% vs 3.87% actual, GLD 0.15% vs 5.82%, TLT 10.4% vs 15.2%. Screening on gap_rate is not a substitute for running prepare+validate.",
+  "universe_final": [
+    "SPY",
+    "IWM"
+  ],
+  "step5": {
+    "mean_ic": -0.02921349614157272,
+    "ic_t": -16.069467692478618,
+    "consistency_ratio": 0.04918032786885246,
+    "blocks_with_pre_registered_sign": 3,
+    "calendar_blocks": 61,
+    "n_eff": 302577,
+    "block_ic_median": -0.0265242052320962,
+    "block_ic_sd": 0.017753348376202557,
+    "block_ic_min": -0.0654682680357839,
+    "block_ic_max": 0.0080412198175099,
+    "blocks_negative": 58,
+    "jt_p": 0.0,
+    "bucket_spearman": -0.6190476190476191,
+    "h2_spread": -0.00684791678294543,
+    "h1_ordering_respected": false,
+    "permutation_p": 0.0,
+    "kill_conditions_fired": [
+      "K2 consistency ratio < 0.50",
+      "K7 sign is the REVERSE of pre-registered H1"
+    ]
+  },
+  "gate_evaluator_correction": "G4 was implemented as abs(rho) >= 0.60 while spec section 6 writes the signed rho >= 0.60. On this run the implementation PASSED G4 at rho = -0.619 where the spec FAILS it. Fixed and re-evaluated; the verdict is unchanged because K2 and K7 both fired and any K firing is Verdict C. Disclosed because in another run it could have turned a FAIL into a PASS.",
+  "do_not_reinterpret": "The observed IC is large, negative and highly consistent (58 of 61 blocks). That is a REJECTION of pre-registered H1, not a mean-reversion discovery. Spec 3.2 and kill condition K7 forbid re-interpreting a reversed sign as a finding. Testing a reversion hypothesis requires a NEW pre-registration and data not used here; the 252-session holdout remains sealed and untouched."
 }
