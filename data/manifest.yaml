@@ -1,5 +1,5 @@
-# Written by stage1.hf_prepare. Verify tick_size and adjustment
-# against the vendor before running the validator.
+# Written by stage1.hf_prepare. Universe SPY + IWM per operator decision
+# 2026-08-21, after TLT/GLD/FXE failed the untouched 5% validate gate.
 instruments:
   - symbol: SPY
     path: raw/SPY_5min.csv
@@ -15,36 +15,8 @@ instruments:
       detected as 'open'. Incomplete 5-minute bins
       (< 4 of 5 minutes) dropped and left as
       empty grid rows, never forward-filled.
-  - symbol: TLT
-    path: raw/TLT_5min.csv
-    timezone: America/New_York
-    bar_label: open
-    session_start: "09:30"
-    session_end: "16:00"
-    tick_size: 0.01
-    adjustment: multiplicative
-    vendor: hfdatalibrary
-    notes: >-
-      Resampled from 1-minute bars by stage1.hf_prepare. Source 1-minute label
-      detected as 'open'. Incomplete 5-minute bins
-      (< 4 of 5 minutes) dropped and left as
-      empty grid rows, never forward-filled.
-  - symbol: GLD
-    path: raw/GLD_5min.csv
-    timezone: America/New_York
-    bar_label: open
-    session_start: "09:30"
-    session_end: "16:00"
-    tick_size: 0.01
-    adjustment: multiplicative
-    vendor: hfdatalibrary
-    notes: >-
-      Resampled from 1-minute bars by stage1.hf_prepare. Source 1-minute label
-      detected as 'open'. Incomplete 5-minute bins
-      (< 4 of 5 minutes) dropped and left as
-      empty grid rows, never forward-filled.
-  - symbol: FXE
-    path: raw/FXE_5min.csv
+  - symbol: IWM
+    path: raw/IWM_5min.csv
     timezone: America/New_York
     bar_label: open
     session_start: "09:30"

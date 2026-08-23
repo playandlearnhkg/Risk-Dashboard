@@ -37,43 +37,37 @@ history_option: A        # min_obs 250, W 500, blocks of 63, ~7 years/instrument
 data:
   manifest_status: PENDING_VALIDATION   # -> VERIFIED once stage1.validate passes
 
-  # ORIGINAL FROZEN SET, retained by operator instruction 2026-08-21.
-  # Data-quality measurements below suggest TLT and FXE will fail the
-  # admission gates, but the DECISION IS DEFERRED TO THE PIPELINE: the
-  # validator's degenerate-bar limit decides, not a judgement call made in
-  # advance. If a gate fires, a substitute is proposed at that point, on data
-  # adequacy only, and before any IC is computed.
+  # UNIVERSE REWRITTEN 2026-08-21, by operator decision, BEFORE any IC,
+  # bucket or quadrant number was computed. In plain language:
+  #
+  #   * The original set was SPY, TLT, GLD, FXE. Three of those four - TLT,
+  #     GLD and FXE - FAILED the 5% degenerate-bar gate in stage1.validate.
+  #     The gate was left exactly as frozen; it was not loosened to admit
+  #     them. Measured: TLT 15.19%, GLD 5.82%, FXE 66.08%, against the 5%
+  #     limit. SPY 3.87% and IWM 4.21% are the only instruments that clear it.
+  #
+  #   * This substitution is DATA ADEQUACY, not result-driven. It was decided
+  #     from validator output alone. No score, IC, bucket or quadrant number
+  #     existed at the time, and none had been computed for any instrument.
+  #
+  #   * GENERALISATION IS LIMITED. Both survivors are liquid US equity ETFs
+  #     and the window ends at the 2022 IEX break. Any result speaks to liquid
+  #     US equity ETFs in the pre-2022 consolidated-tape era, and to nothing
+  #     else. Not to rates, credit, FX, commodities, single stocks, or to the
+  #     post-2022 microstructure regime.
+  #
+  #   * K_eff IS EXPECTED NEAR 1. SPY and IWM are both US equity and move
+  #     together intraday, so the second instrument adds little independent
+  #     information. This is effectively a SINGLE-ASSET-CLASS study. Power
+  #     therefore rests entirely on history length (~4,065 sessions, ~60
+  #     calendar blocks against the 20 required), not on breadth. Step 2
+  #     measures the real K_eff and returns Verdict B if it falls short.
+  #
+  # Everything else is unchanged: the 5% abort, the resampling rules,
+  # era_end 2022-02-28, and every analysis gate remain exactly as frozen.
   instruments:
-    - SPY      # US large-cap equity
-    - TLT      # long duration rates
-    - GLD      # gold
-    - FXE      # EUR/USD
-
-  # Measured with stage1.hf_quality on 2026-08-21. gap_pre / gap_post are mean
-  # daily gap rate (fraction of the 390-bar grid with no trade) before and
-  # after the 2022-03-01 IEX break. est_5min_drop is the implied share of
-  # 5-minute bins with fewer than 4 of 5 minutes traded.
-  instrument_quality_evidence:
-    admitted:
-      SPY: {gap_pre: 0.0003, gap_post: 0.0285, obs_pre: 388.4, est_5min_drop: 0.0000}
-      QQQ: {gap_pre: 0.0003, gap_post: 0.0367, obs_pre: 388.3, est_5min_drop: 0.0000}
-      DIA: {gap_pre: 0.0055, gap_post: 0.4145, obs_pre: 386.3, est_5min_drop: 0.0003}
-      GLD: {gap_pre: 0.0126, gap_post: 0.3065, obs_pre: 383.6, est_5min_drop: 0.0015}
-      IWM: {gap_pre: 0.0134, gap_post: 0.0417, obs_pre: 383.3, est_5min_drop: 0.0017}
-      SLV: {gap_pre: 0.0342, gap_post: 0.3513, obs_pre: 375.1, est_5min_drop: 0.0109}
-    rejected:
-      EFA: {gap_pre: 0.0521, est_5min_drop: 0.0244, reason: "exceeds max_drop_fraction"}
-      XLE: {gap_pre: 0.0524, est_5min_drop: 0.0247, reason: "exceeds max_drop_fraction"}
-      XLF: {gap_pre: 0.0603, est_5min_drop: 0.0322, reason: "exceeds max_drop_fraction"}
-      XLU: {gap_pre: 0.0727, est_5min_drop: 0.0456, reason: "exceeds max_drop_fraction"}
-      EEM: {gap_pre: 0.0746, est_5min_drop: 0.0478, reason: "exceeds max_drop_fraction"}
-      HYG: {gap_pre: 0.1102, est_5min_drop: 0.0969, reason: "credit; too gappy"}
-      TLT: {gap_pre: 0.1149, est_5min_drop: 0.1043, reason: "ORIGINAL PICK; too gappy"}
-      LQD: {gap_pre: 0.2228, est_5min_drop: 0.3101, reason: "credit; too gappy"}
-      IEF: {gap_pre: 0.2785, est_5min_drop: 0.4271, reason: "rates; too gappy"}
-      UUP: {gap_pre: 0.3534, est_5min_drop: 0.5782, reason: "FX; too gappy"}
-      FXE: {gap_pre: 0.4728, est_5min_drop: 0.7766, reason: "ORIGINAL PICK; unusable.
-             Only 205 of 390 minutes trade pre-break, 17.6 post-break"}
+    - SPY      # US large-cap equity, validated degenerate fraction 3.87%
+    - IWM      # US small-cap equity, validated degenerate fraction 4.21%
 
   # CORRECTION 2026-08-21: est_5min_drop below was derived from daily gap_rate
   # assuming independent missing minutes. It materially UNDERSTATES the
@@ -113,15 +107,19 @@ data:
   # pre-registered restriction to the pre-break era stands.
   known_limitations:
     - "Pre-2022 only: says nothing about the current microstructure regime."
-    - "Vendor flags a survivor-biased universe pre-2022. Stage 1 names four
-       surviving ETFs rather than screening, so no selection is performed on
-       the data, but results generalise to major liquid ETFs only."
-    - "MEASURED RISK to the four-macro-driver design: no rates, credit or FX
-       instrument in this library clears the data-quality admission rule at
-       1-minute resolution (TLT 10.4% estimated bin drop, IEF 42.7%, UUP
-       57.8%, FXE 77.7%). If the validator rejects TLT and FXE, the surviving
-       set is equity plus metals only, K_eff falls toward 2, and any result
-       generalises no wider than liquid US equity and metals ETFs."
+    - "Vendor flags a survivor-biased universe pre-2022. Stage 1 names its
+       instruments rather than screening, so no selection is performed on the
+       data, but SPY and IWM are names chosen with hindsight of their
+       survival."
+    - "SINGLE ASSET CLASS. The four-macro-driver design was not achievable:
+       no rates, credit, FX or metals instrument in this library clears the
+       untouched 5% degenerate-bar gate at 5-minute resolution (measured TLT
+       15.19%, GLD 5.82%, SLV 46.95%, FXE 66.08%). Both survivors are US
+       equity ETFs, so a result generalises to liquid US equity ETFs in the
+       pre-2022 era and nowhere else."
+    - "K_eff EXPECTED NEAR 1. SPY and IWM co-move intraday, so the second
+       instrument adds little independent information. Power rests on history
+       length, not breadth."
 
   # Resampling rules, fixed before any result. 1-min -> 5-min.
   resampling:
