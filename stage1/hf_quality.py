@@ -105,7 +105,13 @@ def main(argv: list[str] | None = None) -> int:
 
     key = os.environ.get("ELKASSABGIDATA_KEY")
     if not key:
-        print("set ELKASSABGIDATA_KEY in your environment first")
+        print("ELKASSABGIDATA_KEY is not set in this environment.\n"
+              "  export ELKASSABGIDATA_KEY='your-key'    # bash/zsh\n"
+              "  $env:ELKASSABGIDATA_KEY='your-key'      # PowerShell\n"
+              "Get or view a key at https://hfdatalibrary.com/pages/account\n"
+              "Note: the MCP connector's key is held server-side and is NOT\n"
+              "visible to this process - the download endpoints need the key\n"
+              "in the environment, not in the MCP configuration.")
         return 1
 
     print("=" * 78)
