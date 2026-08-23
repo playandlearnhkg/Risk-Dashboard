@@ -13,3 +13,8 @@ numpy==2.4.6
 pandas==3.0.5
 pyarrow>=17.0.0      # parquet only
 PyYAML>=6.0          # manifest and pre-registration only
+
+# Only needed if pulling from HF Data Library (stage1.hf_quality,
+# stage1.hf_prepare). Not used by the analysis path, so a local run on
+# already-downloaded bars does not require it.
+requests>=2.31.0
