@@ -9,6 +9,9 @@ results/**
 !results/
 !results/**/
 !results/**/run_report.json
+!results/**/block_ic.csv
+!results/**/decile_table.csv
+!results/**/quadrant_table.csv
 
 __pycache__/
 *.pyc
