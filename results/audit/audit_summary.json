@@ -1,0 +1,48 @@
+{
+  "IWM": {
+    "symbol": "IWM",
+    "sessions_hf": 4064,
+    "sessions_yahoo": 4067,
+    "sessions_both": 4064,
+    "in_yahoo_not_hf": [
+      "2007-01-23",
+      "2007-01-26",
+      "2007-01-30"
+    ],
+    "in_hf_not_yahoo": [],
+    "median_range_capture": 0.8860763487076295,
+    "mean_range_capture": 0.8770292352109528,
+    "sessions_capture_below_95pct": 3250,
+    "sessions_capture_below_90pct": 2290,
+    "sessions_capture_above_101pct": 2,
+    "median_close_diff_bp": -842.6169741041772,
+    "hf_close_over_yahoo_raw": 0.9157383025895822,
+    "hf_close_over_yahoo_adjclose": 1.0752900625502952,
+    "full_sessions": 374,
+    "short_sessions": 3690,
+    "half_days": 36,
+    "sessions_missing_0930": -7604
+  },
+  "SPY": {
+    "symbol": "SPY",
+    "sessions_hf": 4066,
+    "sessions_yahoo": 4067,
+    "sessions_both": 4066,
+    "in_yahoo_not_hf": [
+      "2007-01-30"
+    ],
+    "in_hf_not_yahoo": [],
+    "median_range_capture": 0.8336749970889054,
+    "mean_range_capture": 0.8262165347723772,
+    "sessions_capture_below_95pct": 3490,
+    "sessions_capture_below_90pct": 2937,
+    "sessions_capture_above_101pct": 1,
+    "median_close_diff_bp": -1323.5172123219224,
+    "hf_close_over_yahoo_raw": 0.8676482787678077,
+    "hf_close_over_yahoo_adjclose": 1.070285929152316,
+    "full_sessions": 406,
+    "short_sessions": 3660,
+    "half_days": 35,
+    "sessions_missing_0930": -7743
+  }
+}

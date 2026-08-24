@@ -12,6 +12,8 @@ results/**
 !results/**/block_ic.csv
 !results/**/decile_table.csv
 !results/**/quadrant_table.csv
+!results/**/audit_summary.json
+!results/**/event_day_table.csv
 
 __pycache__/
 *.pyc

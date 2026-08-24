@@ -142,7 +142,11 @@ data:
   extended_hours_policy: exclude   # FROZEN — RTH only; see red flags in spec
   bar_timestamp_convention: PENDING   # open_labelled | close_labelled — VERIFY, never assume
   timezone_of_raw_stamps: PENDING     # e.g. "epoch_ms_utc"
-  adjustment_convention: PENDING      # multiplicative | additive | none
+  adjustment_convention: multiplicative_back_adjusted
+  # SETTLED 2026-08-23 by docs/DATA_AUDIT.md: median hf_close/yahoo_raw_close
+  # runs 0.741 (2006) -> 1.000 (2022), the signature of dividend back-
+  # adjustment. Multiplicative, so a per-day scale factor cancels exactly in
+  # every Stage 1 ratio feature. Run 1 scores are unaffected.
   tick_size: PENDING
   session_calendar_source: PENDING    # must include holidays AND half-days
   snapshot_hash: PENDING              # sha256 of the immutable local copy
