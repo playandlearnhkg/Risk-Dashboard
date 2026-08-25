@@ -1,7 +1,8 @@
 # Study B — Opening-Bar Predictivity Spec
 
 **Status:** DRAFT. Not accepted. **Do not implement until the user accepts
-this spec.**
+this spec.** Two freeze questions are open and blocking — §11 — and no yaml
+or code is written until they are answered.
 **Relationship to other documents:** `docs/programme.md` (the file the upload
 called `spec.md`) is the programme charter, not a frozen study spec — it holds
 three studies (A done, B, C) and must not be treated as this study's freeze.
@@ -18,20 +19,58 @@ document references them by name and does not restate or vary them.
 
 ---
 
-## 1. Claim and sign
+## 1. Claim and sign — two-sided
 
-> **H1:** On a 5-minute RTH bar, a higher Directional Quality (`DQ`) score on
-> the **09:30 opening bar** is followed by a better forward outcome in the
-> same direction (continuation), over a pre-declared forward window.
+**Revised 2026-08-25.** The operator has explicitly not decided whether the
+opening bar continues or fades, and does not want that decided by default
+wording. Study B is **exploration of existence**, not a locked-direction
+replication of Run 1's claim.
 
-**Sign is locked:** positive. Higher `DQ` at the open → higher signed forward
-return.
+> **H1:** `DQ` on the true 09:30 bar is associated with the primary forward
+> window T2. Direction is not assumed. Verdict A requires `|effect|` above
+> the pre-declared floor and stability across blocks. The observed sign is
+> reported as a description. A trading rule in that direction requires
+> unused data.
 
-**A reversed sign is K7 — a rejection of H1, not a fade product.** Exactly as
-in Run 1, if the observed relationship runs the opposite way, the finding is
-"H1 rejected for the opening bar", full stop. Testing a fade hypothesis on the
-opening bar requires its own spec, its own sign declared in advance, and data
-this study has not touched. Constitution rule 3 applies without exception.
+Unpacking each clause, because each one closes a specific way this could
+still turn into a locked claim by accident:
+
+- **"Associated," not "continuation" or "fade."** Neither word appears in the
+  claim itself. Both are named in §3 as competing, pre-declared readings of
+  whatever sign is observed — not as the hypothesis.
+- **"`|effect|` above the floor," not "positive IC above the floor."**
+  Detection is on magnitude. §5's power table is therefore about detecting
+  an effect of either sign, exactly as before — a two-sided test does not
+  relax the floor, it removes the sign restriction on which side of the
+  floor counts (see §5 caveat).
+- **"Stability across blocks"** reuses Run 1's consistency-ratio machinery,
+  generalised to two-sided: the requirement is that the *sign* is stable
+  block-to-block (not necessarily positive), not that it matches a
+  pre-declared direction.
+- **"The observed sign is reported as a description"** — a finding of
+  "negative and stable" is exactly as complete a Verdict A as "positive and
+  stable." Neither is privileged. What is *not* permitted is choosing which
+  competing mechanism (§3) explains a negative result after seeing that it
+  is negative — the mechanisms are ranked by fit, not invented to fit.
+- **"A trading rule in that direction requires unused data"** is the
+  guardrail that replaces K7's old locked-sign role: whichever sign is
+  observed, Study B has by construction just spent its data *discovering*
+  that sign. Building a rule from it on the same sample is exactly the
+  discovery-then-license-to-trade error the constitution exists to block,
+  regardless of which direction the arrow points. A directional trading
+  rule — either continuation or fade — is a separate, later study on data
+  Study B has not touched.
+
+**What this changes from the original draft, and why it is not weaker:**
+the original locked H1 to continuation and treated a reversed sign as
+outright rejection (K7). That was appropriate for a *replication* of Run 1's
+already-declared direction. Study B is not that — its stated purpose is to
+find out whether a relationship exists at all before describing its sign.
+Locking a direction here would have made a negative, stable result
+indistinguishable from noise in the gate logic, which is the opposite of
+what "explore first, describe sign after" requires. The rigor moves instead
+into §3 (mechanisms pre-declared before the sign is known) and into the
+"unused data" clause above.
 
 ---
 
@@ -39,7 +78,7 @@ this study has not touched. Constitution rule 3 applies without exception.
 
 All three targets are **one observation per session per instrument** —
 unlike Run 1's `r_1`, which was one observation per bar. This has a direct
-power consequence worked out in §4: switching targets does not change the
+power consequence worked out in §5: switching targets does not change the
 observation count, only what each observation measures.
 
 Causal normaliser: **`ATR_20` evaluated at the last 5-minute bar of the
@@ -57,34 +96,94 @@ from session `t`.
 T1 and T3 are reported on every run, exactly as Run 1 reported `y_body`
 alongside primary `r_1` — never gating the verdict, always disclosed.
 
+**Pre-declared reading rule for T1 vs T2, fixed now, before either number
+exists:**
+
+> If T1 shows a negative, stable effect and T2 does not show the same effect
+> (in size and stability), T1 is read as **consistent with bid-ask
+> bounce / spread mechanics**, not reported as a standalone fade signal. It
+> is a diagnostic outcome, not a second product of this study. Only if T2
+> — the primary target — itself shows a stable effect does §3's mechanism
+> ranking apply to the headline result.
+
+This rule exists so that a T1-only effect cannot quietly become "Study B
+found a fade edge" by virtue of being computed and looking clean in
+isolation. T1's whole role is as a control that can *explain away* part of
+a T2 finding, not as a second hypothesis competing for attention.
+
 ### Why T2 is primary
 
 The programme goal (§0, `docs/programme.md`) is a filter for an ORB-style
 setup: *"clean enough to take, sloppy enough to wait."* That decision is made
 once, at or shortly after the open, and lived with for the trade's holding
-period — not re-evaluated bar by bar.
+period — not re-evaluated bar by bar. This reasoning is about **holding
+period fit**, not about which sign is expected, and applies identically
+whatever sign T2 turns out to carry:
 
 - **T1 is too granular for the stated purpose**, and it is the horizon most
   exposed to the mechanism `docs/RUN1_INFERENCE_MEMO.md` flagged as the
   leading (untested) explanation for Run 1's own reversed tilt: bid-ask
   bounce. A single 5-minute transition immediately after the open is exactly
-  where that effect would be strongest. Reporting T1 lets that be checked;
-  gating the verdict on it would risk re-measuring microstructure and calling
-  it information.
+  where that effect would be strongest. Reporting T1 lets that be checked
+  against T2 via the rule above; gating the verdict on T1 alone would risk
+  re-measuring microstructure and calling it information, regardless of
+  which sign it came back with.
 - **T3 dilutes the signal with unrelated afternoon dynamics.** A morning
   setup's information content, if any, should decay well before the close;
   folding in six more hours of unrelated variance is not the ORB-filter
-  question.
+  question, whichever direction that information runs.
 - **T2 matches the holding period an ORB-style filter actually cares about**
   and stays close enough to the open that a causal story from opening-bar
-  geometry to outcome remains plausible.
+  geometry to outcome — in either direction — remains plausible.
 
 The 09:35–12:00 window is provisional — a placeholder that can be tightened
-(e.g. 09:35–10:30) at freeze time. It must not move after data is seen.
+(e.g. 09:35–10:30) at freeze time. It must not move after data is seen. This
+is one of the two freeze questions still open; see §10.
 
 ---
 
-## 3. Missing-open rule
+## 3. Competing mechanisms (pre-declared)
+
+Because §1 no longer names a direction, the space of possible explanations
+for *whatever* sign is observed must be enumerated **now**, before any
+number exists — otherwise a post-hoc story gets written to fit the result,
+which is exactly the narrative failure mode the constitution exists to
+block. Three mechanisms are pre-declared. After the run, the result may be
+described as more consistent with one of these than the others. **A fourth
+mechanism may not be introduced after seeing the data to explain a result
+that doesn't fit the three below.**
+
+| # | Mechanism | Predicts | Pre-declared signature in this study's own outputs |
+|---|---|---|---|
+| **M1** | **Continuation / ORB / overnight information.** A clean, decisive opening bar reflects real information (overnight news, gap conviction) that the market continues to digest through the morning. | Same-sign effect on T2 as `DQ`'s own sign; effect should *not* be concentrated in T1 alone, since information takes time to be reflected, not just the first 5 minutes. | Positive, stable T2; T1 similar sign but weaker or noisier than T2 (information keeps arriving after the first bar) |
+| **M2** | **Fade / opening overshoot.** A decisive-looking opening bar reflects an overreaction (order-flow imbalance from open auctions, stop runs) that partially reverses once the imbalance clears. | Opposite-sign effect on T2 relative to `DQ`'s sign; plausibly present in both T1 and T2, but growing (not shrinking) from T1 to T2 as the overshoot unwinds over the morning. | Negative, stable T2; T1 same sign as T2 but smaller in magnitude |
+| **M3** | **Bid-ask bounce / spread mechanics.** The opening bar's close is more likely to have printed on the bid or offer than at the true midpoint, so the very next print mechanically tends to move the other way — pure microstructure, no information content, and it should decay almost immediately. | Opposite-sign effect on T1 that **does not persist** to T2 — the signature §2's pre-declared T1-vs-T2 rule is built to catch. | Negative T1, effect at T2 much smaller or absent — the specific pattern that triggers §2's "read T1 as bounce, not a product" rule |
+
+**How the ranking is read after the run — pre-declared, not chosen after
+seeing numbers:**
+
+- **T2 stable and same-signed as `DQ`, T1 weaker or noisier** → most
+  consistent with **M1**.
+- **T2 stable and opposite-signed to `DQ`, T1 same sign and smaller** →
+  most consistent with **M2**.
+- **T1 opposite-signed and large, T2 small or unstable** → most consistent
+  with **M3**, and by §2's rule this is reported as a T1 diagnostic, not a
+  Verdict A on T2.
+- **None of the three patterns fit cleanly** → reported as exactly that:
+  "does not match any pre-declared mechanism," not resolved by inventing a
+  fourth story. This is a legitimate, complete outcome, not a gap to be
+  patched.
+
+Note the Run 1 precedent this table is built to be consistent with: Run 1's
+all-day result was negative and stable at the bar level, and
+`docs/RUN1_INFERENCE_MEMO.md` flagged M3 (bounce) as the leading untested
+explanation *because* the effect was large in rank terms and negligible in
+ATR/mean terms — the same diagnostic posture M3 uses here, now written down
+in advance instead of reconstructed after the fact.
+
+---
+
+## 4. Missing-open rule
 
 Per `docs/DATA_AUDIT.md`, HF's 09:30 bar is absent on **9.57% of SPY
 sessions (389 / 4,066)** and **12.89% of IWM sessions (524 / 4,064)**. Since
@@ -104,16 +203,29 @@ work: if the real 09:30 print is missing from *this* recording, that says
 nothing about whether the live feed had it, and the honest response is "no
 observation," not a silent substitution.
 
-The power cost of Drop is carried through explicitly in §4 rather than
+The power cost of Drop is carried through explicitly in §5 rather than
 glossed over.
 
 ---
 
-## 4. Universe and power (computed before freeze, t = 3.0)
+## 5. Universe and power (computed before freeze, t = 3.0)
 
 Session counts and missing-open rates: `docs/DATA_AUDIT.md`. `n_eff`
-methodology: `stage1.stats.effective_sample_size` (unchanged — see §9).
+methodology: `stage1.stats.effective_sample_size` (unchanged — see §10).
 `K_eff = K / (1 + (K−1)·ρ̄)`.
+
+**Two-sided testing does not change this table, and does not fix the 2-name
+problem.** §1's revision removes the sign restriction on the *hypothesis*,
+not on the *arithmetic*. `n_eff`, `K_eff` and the detectable-IC floor come
+from the sampling variance of the estimator (`t = IC·√n_eff`), which is
+identical whether the test asks "is IC positive" or "is `|IC|` large" —
+going two-sided changes the critical value's interpretation, not `n_eff`
+itself. A two-sided test at the same `α` is in fact very slightly *less*
+sensitive per unit of `n_eff`, not more, because the same significance
+budget is split across both tails instead of spent on one. **Concretely: the
+2-name universe's detectable floor stays 0.047 whether H1 is signed or not.**
+Going two-sided was the right response to genuine uncertainty about
+direction — it is not, and must not be read as, a power upgrade.
 
 **Caveat that must travel with every row below:** `K_eff` for the 2-name
 row reuses **1.12**, Run 1's measured value from *all-day* 5-minute bars. It
@@ -171,7 +283,7 @@ expecting to detect only the **upper portion** of the plausible band
 
 ---
 
-## 5. Holdout
+## 6. Holdout
 
 Study-specific. **Not** Run 1's 252-session holdout treated as 252
 observations — Run 1's holdout carried ~78 bars × 252 sessions per
@@ -179,7 +291,7 @@ instrument; Study B carries **one** observation per session.
 
 Proposed default, sized to the same session-count convention as Run 1 for
 comparability: **last 252 sessions**, sealed at freeze, one look, after
-Step 5 on the evaluation history. Under the Drop rule (§3), the realised
+Step 5 on the evaluation history. Under the Drop rule (§4), the realised
 observation count in that window is:
 
 ```
@@ -188,22 +300,26 @@ observation count in that window is:
   IWM (12.89%) -> ~220 observations
 ```
 
-**~220–230 observations is far below any detection threshold in §4.** That
+**~220–230 observations is far below any detection threshold in §5.** That
 is fine, because the holdout's role here is narrower than in Run 1: it can
-only **confirm the sign** of an already-frozen effect (a one-sided check
-against the pre-declared H1 direction), not re-estimate an effect size or
-serve as a second discovery pass. This must be written into the frozen
-pre-registration explicitly, so a null result on the holdout is not
-mistaken for a power failure of the holdout itself — it is expected to be
-underpowered for estimation and is not being asked to estimate anything.
+only **confirm the sign observed on the evaluation history** — a one-sided
+check that the same sign found and frozen at Step 5 still holds — not
+re-estimate an effect size, not discover a new direction, and not serve as
+a second exploration pass. Because H1 is now two-sided (§1), there is no
+pre-declared direction for the holdout to check against; it checks whatever
+sign the evaluation history produced, frozen before the holdout is opened.
+This must be written into the frozen pre-registration explicitly, so a null
+result on the holdout is not mistaken for a power failure of the holdout
+itself — it is expected to be underpowered for estimation and is not being
+asked to estimate anything.
 
 Per constitution rule 7, it is looked at once, after the claim is frozen.
 
 ---
 
-## 6. Source policy
+## 7. Source policy
 
-- **HF Data Library may be used only under the missing-open rule in §3
+- **HF Data Library may be used only under the missing-open rule in §4
   (Drop, by default).** No other accommodation for HF's incomplete opening
   coverage is in scope for this spec.
 - **What HF cannot support, and must not be asked to:**
@@ -223,7 +339,7 @@ Per constitution rule 7, it is looked at once, after the claim is frozen.
 
 ---
 
-## 7. Out of scope
+## 8. Out of scope
 
 - All-day rerun of Study A (Run 1 is closed; see `docs/RUN1_INFERENCE_MEMO.md`)
 - Fade / reversal read from Run 1's reversed sign
@@ -234,21 +350,23 @@ Per constitution rule 7, it is looked at once, after the claim is frozen.
 
 ---
 
-## 8. Acceptance checks before any code or data work
+## 9. Acceptance checks before any code or data work
 
-- [ ] Claim (§1) and sign frozen
-- [ ] Primary target (§2, T2) frozen; T1/T3 confirmed as reported-not-gating
-- [ ] Missing-open rule (§3, Drop) frozen
-- [ ] Universe frozen, with its detectable-IC floor (§4) accepted as a known
+- [ ] Claim (§1) frozen — two-sided, no direction assumed
+- [ ] Primary target (§2, T2) frozen; T1/T3 confirmed as reported-not-gating,
+      per the T1-vs-T2 bounce reading rule in §2
+- [ ] Mechanism table (§3) accepted as pre-declared and closed to later addition
+- [ ] Missing-open rule (§4, Drop) frozen
+- [ ] Universe frozen, with its detectable-IC floor (§5) accepted as a known
       limitation rather than discovered later
-- [ ] Detectable IC written down (§4) — including the breadth-ceiling table
-- [ ] Holdout named and its thin observation count (§5) accepted in advance
+- [ ] Detectable IC written down (§5) — including the breadth-ceiling table
+- [ ] Holdout named and its thin observation count (§6) accepted in advance
 - [ ] Pointer confirmed: reuse `stage1.gates` canaries, `stage1.validate`,
-      `stage1.power`, `stage1.run_all` — no rewrite (§9)
+      `stage1.power`, `stage1.run_all` — no rewrite (§10)
 
 ---
 
-## 9. Mapping to the existing pipeline
+## 10. Mapping to the existing pipeline
 
 **Reused unchanged — no rewrite, per programme instruction:**
 
@@ -276,7 +394,7 @@ Per constitution rule 7, it is looked at once, after the claim is frozen.
 
 - An **opening-bar selector** (e.g. `stage1/opening_selector.py`) that, given
   already-validated 5-minute bars:
-  1. Applies the Drop rule (§3) per session.
+  1. Applies the Drop rule (§4) per session.
   2. Reads the `DQ` (and component) values already computed by
      `candle_features` on the 09:30 row only.
   3. Looks up `Close_09:35`, `Close_12:00`, `Close_15:55` from the same
@@ -299,6 +417,46 @@ Nothing else changes. Scoring, `π₀`, the gate evaluator, and the canaries are
 the parts of Run 1 that were tested hardest and caught real bugs (the
 five-hour timezone shift, the silent NaN-alignment fault); reusing them
 verbatim is the point, not an implementation detail.
+
+---
+
+## 11. Freeze questions still open — blocking
+
+Everything above this line is drafted and internally consistent, but two
+choices belong to the operator, not to this document, and neither has been
+answered yet. **No `preregistration-study-B.yaml` and no code (including the
+opening-bar selector in §10) is written until both are answered.**
+
+1. **Universe.** §5 shows the 2-name universe (SPY + IWM) has a detectable
+   floor of IC 0.047 — almost exactly on the pre-registered "assume a bug"
+   threshold, meaning a true effect anywhere in the plausible 0.01–0.03 band
+   would be invisible to it, and the study would very likely return
+   **Verdict B (underpowered)** at Step 2 before any score is computed. §5
+   also shows that breadth has a hard ceiling at these correlations (IC
+   0.027–0.035, never reaching below it, however many names are added).
+
+   **Choose one:**
+   - **(a)** Accept the 2-name universe as is, accepting that Verdict B is
+     the likely outcome and treating a successful run past Step 2 as a
+     bonus rather than an expectation.
+   - **(b)** Name a larger universe now — not "add some names later," but a
+     specific list, sized and its `ρ̄`/`K_eff` re-estimated (§5's 0.3/0.5
+     rows are planning assumptions, not a menu) — understanding it still
+     cannot reach the bottom of the plausible band per the breadth-ceiling
+     result.
+
+2. **T2 window end.** §2 fixed T2 as 09:35–12:00 as a *provisional*
+   placeholder, reasoned from holding-period fit, not derived from data.
+
+   **Choose one:**
+   - **(a)** Freeze 12:00 as written.
+   - **(b)** Change it now — e.g. 09:35–10:30 for a tighter ORB-length hold —
+     before any freeze, not after seeing how either version performs.
+
+Both are one-way choices under constitution rule 1: made now, in writing,
+before data is touched. Changing either after Step 5 has run would be
+re-specification on a result, which voids the run under constitution rule 3
+just as surely as flipping a sign would.
 
 ---
 
