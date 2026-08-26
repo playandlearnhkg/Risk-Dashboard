@@ -281,6 +281,46 @@ specifiable and both are legitimate:
 
 ---
 
-**No ticker is locked and no `preregistration-study-B.yaml` is written until
-this table is accepted.**
+## 8. Decision — 2026-08-26
+
+**Accepted. TLT dropped. Study B proceeds; not paused.**
+
+**Locked universe: SPY, IWM, GLD, XLE, EEM.** UUP, FXE, IEF and SLV remain
+out. No era restart. E1–E6 as written above is the frozen eligibility rule,
+recorded as an explicit specification change against Run 1's whole-instrument
+5% gate.
+
+Recorded in `docs/preregistration-study-B.yaml` (`data.eligibility_rule`,
+`data.admission`, `data.measured_eligibility`, `data.excluded_instruments`),
+together with every limitation in §6 above as
+`data.known_limitations`, and with **EEM named as a watch-item** — at 77.09%
+eligible in 2006–2009 it is the weakest admitted name on the era floor. It
+clears with room and is admitted; if Step 2 shows its contribution
+concentrated post-2010, that is a limitation to report, **not** a reason to
+drop it after the fact.
+
+### Correction to §6.3's power figures
+
+The floor quoted in §6.3 (0.034–0.040) was computed on the **full** sample at
+**t = 3.0** with **no warm-up deduction**. The frozen figures in the yaml
+apply all three corrections that were missing — the two-trial critical value
+(t = 3.21), the 252-session holdout, and the 250-session normalisation
+warm-up — and are **worse**:
+
+| ρ̄ | K_eff | evaluation n_eff | Detectable IC |
+|---|---|---|---|
+| 0.30 | 2.27 | 6,542 | **0.0397** |
+| 0.40 | 1.92 | 5,536 | **0.0431** |
+| 0.45 | 1.79 | 5,140 | **0.0448** |
+| 0.50 | 1.67 | 4,798 | **0.0463** |
+
+This sharpens rather than changes the conclusion in §6.3: **Verdict B is the
+expected outcome**, and at ρ̄ ≥ 0.5 the smallest detectable effect is already
+close to `suspicion_threshold.IC` = 0.05 — territory the pre-registration says
+to treat as a probable bug.
+
+---
+
+**Ticker list locked. `docs/preregistration-study-B.yaml` written. No DQ, no
+IC and no Step 5 until the operator accepts the yaml.**
 

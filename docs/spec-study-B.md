@@ -1,12 +1,19 @@
 # Study B — Opening-Bar Predictivity Spec
 
-**Status:** DRAFT. Not accepted. **Do not implement until the user accepts
-this spec.** The two freeze questions in §11 were **answered on 2026-08-25**
-and §11 now records those answers. What remains blocking is narrower: the
-universe answer names instruments whose data has not been screened, so
-**ticker lock waits on the DATA-ONLY coverage table** (`results/study_b_coverage/`,
-`stage1/coverage_study_b.py`). No `preregistration-study-B.yaml` and no
-opening-bar selector is written until that table is accepted.
+**Status:** **FROZEN 2026-08-26.** All three §11 questions are answered, the
+ticker list is locked, and `docs/preregistration-study-B.yaml` is written.
+This file is the prose question; the yaml is the machine-checked freeze. From
+here the yaml governs — where the two disagree, the yaml wins, and this file
+is not edited to match a result.
+
+**Locked universe: SPY, IWM, GLD, XLE, EEM.** TLT dropped on regime
+selection (46.5% eligible in 2006–2009); UUP, FXE, IEF, SLV dropped on
+coverage. Eligibility is the per-session rule E1–E6 in
+`docs/STUDY_B_ELIGIBILITY.md` — an explicit specification change from Run 1's
+whole-instrument 5% gate.
+
+**Still not run:** no DQ, no IC, no target value, no Step 5. Awaiting operator
+acceptance of the yaml.
 **Relationship to other documents:** `docs/programme.md` (the file the upload
 called `spec.md`) is the programme charter, not a frozen study spec — it holds
 three studies (A done, B, C) and must not be treated as this study's freeze.
@@ -543,15 +550,21 @@ Per constitution rule 7, it is looked at once, after the claim is frozen.
 - [x] Detectable IC written down (§5) — measured session counts, two-trial
       correction, and the breadth-ceiling table
 - [x] **DATA-ONLY coverage screen run** — `docs/STUDY_B_COVERAGE.md`
-- [ ] **Coverage table accepted by the operator** ← blocking
-- [ ] **§11 Q3 answered** — gate scope, which decides K=2 vs K=6 ← blocking
-- [ ] **Tickers locked** ← blocking, follows Q3
-- [ ] Holdout named and its thin observation count (§6) accepted in advance,
-      re-derived on the locked universe
-- [ ] Pointer confirmed: reuse `stage1.gates` canaries, `stage1.validate`,
+- [x] **Coverage table accepted** (2026-08-26)
+- [x] **§11 Q3 answered** — neither pooled option taken; the per-session
+      eligibility rule E1–E6 replaces the instrument gate
+      (`docs/STUDY_B_ELIGIBILITY.md`), with an explicit ATR-freshness
+      condition
+- [x] **DATA-ONLY eligibility screen run and accepted**
+- [x] **Tickers locked: SPY, IWM, GLD, XLE, EEM** (TLT dropped on regime
+      selection)
+- [x] Holdout named and its thin observation count accepted in advance,
+      re-derived on the locked universe (~345–470 effective)
+- [x] Pointer confirmed: reuse `stage1.gates` canaries, `stage1.validate`,
       `stage1.power`, `stage1.run_all` — no rewrite (§10)
-- [ ] `preregistration-study-B.yaml` written and frozen — **last step, and
-      only after every box above is ticked**
+- [x] **`preregistration-study-B.yaml` written**
+- [ ] **Operator accepts the yaml** ← blocking. No DQ, no IC, no Step 5
+      until this box is ticked.
 
 ---
 
@@ -658,7 +671,29 @@ That is what opens Q3 below.
 
 Recorded in §2. Neither window moves again.
 
-### Q3 — Gate scope. **NEW, OPENED BY THE Q1 ANSWER. BLOCKING.**
+### Q3 — Gate scope. **ANSWERED 2026-08-26 — neither (a) nor (b).**
+
+The operator declined raw option (b) — a 09:30-only gate with no ATR rule —
+and the answer taken instead is a **per-session eligibility rule, E1–E6**,
+specified and measured in `docs/STUDY_B_ELIGIBILITY.md`:
+
+- Run 1 gated **instruments**; Study B gates **sessions**, because it reads
+  one bar per session. The *definition* of a degenerate bar does not move —
+  `valid`, `w_range`, ε and the 5% figure are untouched. What moves is what
+  the rule is applied to. **This is an explicit specification change and
+  comparability with Run 1 is the accepted price.**
+- The ATR condition option (b) lacked is E4/E5: pandas' `ewm` carries the
+  last value forward across NaN, so a barely-traded prior session still
+  yields a finite, stale `atr_prev`. A `notna()` check would pass exactly the
+  sessions needing rejection.
+- Instrument admission uses **two** floors — pooled eligible rate ≥ 70% and
+  **per-era** eligible rate ≥ 70%. TLT passes the first and fails the second.
+
+**Locked universe: SPY, IWM, GLD, XLE, EEM.** The text below is retained as
+the record of what was considered and rejected.
+
+<details>
+<summary>Original Q3 as posed (superseded)</summary>
 
 This question did not exist before Q1 was answered, and it is not a
 re-opening of a settled choice — it is the consequence of naming instruments
@@ -702,16 +737,44 @@ protects comparability; (b) buys the only material power improvement
 available and is defensible on the grounds that a gate should measure what
 the study measures. Both are legitimate; the trade is the operator's.
 
+</details>
+
 ### One-way discipline
 
-All three are one-way choices under constitution rule 1: made now, in
-writing, before any IC exists. Q1 and Q2 are closed. Q3 must be closed before
-`preregistration-study-B.yaml` is written. Changing any of them after Step 5
-has run would be re-specification on a result, which voids the run under
-constitution rule 3 just as surely as flipping a sign would.
+All three are one-way choices under constitution rule 1: made in writing,
+before any IC existed. **All three are now closed**, and
+`docs/preregistration-study-B.yaml` records them. Changing any of them after
+Step 5 has run would be re-specification on a result, which voids the run
+under constitution rule 3 just as surely as flipping a sign would.
 
 ---
 
-**Do not implement until the user accepts this spec. Ticker lock and
-`preregistration-study-B.yaml` wait on acceptance of
-`docs/STUDY_B_COVERAGE.md` and an answer to Q3.**
+## 12. Expected outcome, recorded before the run
+
+`preregistration-study-B.yaml` carries this as `expected_verdict:
+B_underpowered`. It is repeated here because it is the single most important
+thing to have written down in advance:
+
+**The detectable IC floor on the evaluation history is 0.040–0.046**, after
+the two-trial correction (t = 3.21), the 250-session normalisation warm-up
+and the 252-session holdout. The plausible band tops out at **0.03**.
+
+**A true effect anywhere inside the plausible band is invisible to this study
+by construction.** Verdict B is therefore the expected outcome unless `|IC|`
+lands at the very top of, or above, the band.
+
+This is written down so a null is read correctly when it arrives: **a null
+here is uninformative, not evidence of absence.** It does not reject the
+opening-bar hypothesis; it fails to test it at the resolution that would
+matter.
+
+One further consequence worth stating: 0.046 sits close to
+`suspicion_threshold.IC` = 0.05. At ρ̄ ≥ 0.5 the smallest effect this study
+could detect is already in territory the pre-registration says to treat as a
+probable bug. If a result lands there, the pipeline canaries are re-run
+before it is believed.
+
+---
+
+**Frozen. `docs/preregistration-study-B.yaml` governs from here. No DQ, no
+IC, no Step 5 until the operator accepts the yaml.**

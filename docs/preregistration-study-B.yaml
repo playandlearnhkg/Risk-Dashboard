@@ -1,0 +1,546 @@
+# Study B Pre-Registration — Opening-Bar Predictivity
+# ===================================================
+# Spec:       docs/spec-study-B.md          (the official question)
+# Coverage:   docs/STUDY_B_COVERAGE.md      (which names the source can support)
+# Eligibility: docs/STUDY_B_ELIGIBILITY.md  (E1-E6, and what it does not fix)
+# Code:       stage1/  (reused unchanged; see pipeline: below)
+#
+# Same two-half structure as docs/preregistration.yaml, for the same reason:
+#
+#   ANALYSIS half - claim, targets, universe, trial count, decision gates.
+#     These are CHOICES. Choosing them after seeing results is the failure this
+#     document exists to prevent. FROZEN NOW.
+#
+#   DATA half (data.manifest_status) - period, tick size, timestamp convention,
+#     hashes. These are FACTS, DISCOVERED by stage1.validate, not chosen.
+#     Stamped at execution Step 1.
+#
+# THIS IS A SEPARATE STUDY, NOT A CONTINUATION OF RUN 1. It carries its own
+# trial family, its own holdout and its own verdict. Run 1 is closed
+# (docs/RUN1_INFERENCE_MEMO.md, Verdict C) and nothing here reopens it.
+
+status: FROZEN_ANALYSIS
+prereg_version: 1
+study: B_opening_bar
+frozen_at: 2026-08-26
+frozen_commit: recorded_in_commit_message
+
+# Formulas are DEFINED ONCE, in docs/preregistration.yaml (score: block), and
+# are NOT restated here. BD, CL, SA, WB, CONV, DIR, DQ, gamma, w_range, the
+# eps noise floor and the zero-range NaN policy are used exactly as frozen
+# there. Study B changes no part of the score.
+score_reference:
+  file: docs/preregistration.yaml
+  block: score
+  changes: none
+
+# ---------------------------------------------------------------------------
+# Data
+# ---------------------------------------------------------------------------
+data:
+  manifest_status: PENDING_VALIDATION   # -> VERIFIED once stage1.validate passes
+
+  # UNIVERSE LOCKED 2026-08-26 by operator decision, BEFORE any DQ, IC, bucket
+  # or target number was computed for this study. The decision rests only on
+  # the two DATA-ONLY screens named at the top of this file.
+  instruments:
+    - SPY      # US large-cap equity
+    - IWM      # US small-cap equity
+    - GLD      # gold
+    - XLE      # US energy sector equity
+    - EEM      # emerging-market equity
+
+  # WHY THESE FIVE, IN PLAIN LANGUAGE
+  #
+  #   * Started from 7 primary + 4 reserve candidates. The coverage screen
+  #     (docs/STUDY_B_COVERAGE.md) measured the frozen 5% whole-instrument
+  #     degenerate gate on all 11. NINE FAILED IT. Only SPY (3.87%) and IWM
+  #     (4.21%) passed as that gate is written.
+  #
+  #   * UUP, FXE, IEF, SLV were dropped outright and are not in this study.
+  #     UUP is unusable on every axis at once: 29.96% of opens absent, 93.92%
+  #     whole-instrument degenerate, and 66.90% of its 09:30 bars flat EVEN
+  #     WHEN PRESENT, leaving 480 usable sessions of 3,602.
+  #
+  #   * Era restriction was considered and CLOSED. GLD and XLE would need to
+  #     start in 2018-2019, leaving ~800-1,050 sessions. Session count enters
+  #     n_eff linearly, so buying breadth with history is a straight loss.
+  #
+  #   * TLT WAS DROPPED, and this is the one judgement call worth reading.
+  #     TLT clears the pooled eligibility floor at 81.47% but is only 46.51%
+  #     eligible in 2006-2009 against ~93% in every later era. For a
+  #     long-duration Treasury ETF that means discarding half the financial
+  #     crisis, conditioned on its having traded densely in the era when it
+  #     most often did not. That is REGIME SELECTION, not a smaller n. The
+  #     pooled figure hides it completely, which is why the per-era floor
+  #     below exists. Cost of dropping it: the detectable-IC floor worsens by
+  #     roughly 10%, and the study loses its only rates exposure.
+  #
+  #   * NONE OF THIS WAS RESULT-DRIVEN. No DQ, IC, bucket, quadrant or target
+  #     value existed for any instrument in this study at lock time, and none
+  #     had been computed. Both screens compute coverage and validity only.
+
+  # SPECIFICATION CHANGE vs RUN 1 - recorded as a change, not a reading.
+  #
+  # Run 1 gated INSTRUMENTS: whole-instrument degenerate fraction > 5% refused
+  # entry, and every session of an admitted instrument was then used.
+  # Study B gates SESSIONS, because it reads one bar per session, so the
+  # session is the natural unit of admission.
+  #
+  # The DEFINITION of a degenerate bar does not move. `valid`, w_range, eps and
+  # the 5% figure are untouched in docs/preregistration.yaml. What moves is
+  # what the rule is applied to. Comparability with Run 1 is the price, and it
+  # is accepted: statements of the form "Study B found X where Study A found Y"
+  # carry an asterisk from here on.
+  eligibility_rule:
+    id: E1_E6
+    source: docs/STUDY_B_ELIGIBILITY.md
+    unit: session
+    replaces: "Run 1 whole-instrument invalid_bar_abort_threshold (0.05)"
+    conditions:
+      E1_open_present: "a priced bar exists at 09:30 on session t"
+      E2_open_valid: "that bar passes the frozen `valid` flag (unchanged)"
+      E3_prior_exists: "session t-1 exists and is within 5 calendar days"
+      E4_atr_window_fresh: "at least 16 of the 20 bars ending at session t-1's
+        last bar carry a price"
+      E5_prior_dense: "at least 80% of session t-1's grid rows carry a price"
+      E6_atr_usable: "atr_prev at the 09:30 bar is finite and >= 1 tick (0.01)"
+    all_required: true
+
+    # WHY E4 AND E5 EXIST, since this is not obvious from the code.
+    # core.wilder_atr_prev is a Wilder EWM, and pandas' ewm does NOT propagate
+    # NaN - it carries the last value forward:
+    #     pd.Series([1.,2.,nan,nan,4.]).ewm(alpha=.5, adjust=False).mean()
+    #       -> [nan, 1.5, 1.5, 1.5, 3.6875]
+    # So a prior session that barely traded still yields a finite, entirely
+    # ordinary-looking atr_prev, silently stale. Every target divides by that
+    # number. A condition of the form `atr_prev.notna()` would therefore pass
+    # exactly the sessions that most need rejecting. E4 and E5 test FRESHNESS
+    # OF THE INPUTS, not presence of the output. E6 alone is necessary and
+    # nowhere near sufficient.
+
+    # Thresholds were swept before locking (loose / proposed / strict).
+    # STRICT (20/20, 90%) was rejected on evidence, not taste: it cuts SPY
+    # itself to 53% eligible, because at a 3.5% empty-grid rate a 20-bar
+    # window averages 19.3 priced bars, so 20/20 rejects healthy sessions for
+    # ordinary grid holes. It measures the vendor's grid, not the market.
+    thresholds_swept: true
+    rejected_variants:
+      loose:  "E4 >= 12/20, E5 >= 60%, gap <= 7d — admits TLT, which the era
+        floor should reject"
+      strict: "E4 = 20/20, E5 >= 90%, gap <= 4d — cuts every name to 42-53%,
+        SPY included; measures grid artefacts"
+
+  # Instrument admission, replacing Run 1's single instrument-level gate.
+  # TWO floors, not one: the pooled floor catches an instrument that is thin
+  # throughout; the per-era floor catches one whose ineligible sessions all sit
+  # in a single era, which is a regime-selected sample rather than a smaller
+  # one. TLT passes the first and fails the second. That is what the second
+  # floor is for.
+  admission:
+    min_eligible_rate: 0.70
+    min_era_eligible_rate: 0.70
+    eras: ["2006-2009", "2010-2013", "2014-2017", "2018-2022"]
+
+  # MEASURED by stage1.eligibility_study_b at the locked thresholds. These are
+  # facts from the DATA-ONLY screen, recorded as evidence. stage1.validate
+  # re-stamps them at Step 1; if it disagrees, the validator wins.
+  measured_eligibility:
+    SPY: {sessions: 4066, eligible: 3667, rate: 0.9019, usable_T2: 3443, usable_T3: 3390, min_era_rate: 0.8689}
+    IWM: {sessions: 4064, eligible: 3527, rate: 0.8679, usable_T2: 3269, usable_T3: 3271, min_era_rate: 0.8441}
+    GLD: {sessions: 4064, eligible: 3675, rate: 0.9043, usable_T2: 3459, usable_T3: 3538, min_era_rate: 0.8887}
+    XLE: {sessions: 4064, eligible: 3431, rate: 0.8442, usable_T2: 3146, usable_T3: 3205, min_era_rate: 0.8193}
+    EEM: {sessions: 4064, eligible: 3576, rate: 0.8799, usable_T2: 3360, usable_T3: 3382, min_era_rate: 0.7709}
+  excluded_instruments:
+    TLT: "eligible 81.47% pooled but 46.51% in 2006-2009; fails min_era_eligible_rate"
+    UUP: "480 usable sessions of 3,602; 66.90% of present 09:30 bars degenerate"
+    FXE: "45.26% of opens absent; 66.08% whole-instrument degenerate"
+    IEF: "27.65% of opens absent; 56.65% whole-instrument degenerate"
+    SLV: "46.95% whole-instrument degenerate; 9.25% at the open when present"
+
+  base_timeframe: 5min
+  source: hfdatalibrary.com     # 1-min OHLCV, resampled by stage1.hf_prepare
+  era_restriction: pre_iex_break
+  era_end: 2022-02-28
+  era_start: 2006-01-03
+  # Same IEX-break reasoning as Run 1, confirmed empirically there. Study B
+  # inherits the restriction; it does not re-derive it.
+
+  resampling:                   # unchanged from docs/preregistration.yaml
+    rth_filter_before_aggregation: true
+    bins_cross_session: forbidden
+    min_minutes_per_bar: 4
+    incomplete_bin_policy: drop_and_leave_nan_hole
+    forward_fill: forbidden
+    max_drop_fraction: 0.02
+
+  known_limitations:
+    - "ELIGIBLE SESSIONS ARE A SELECTED SUBSAMPLE. Sessions are excluded for
+       illiquidity, and illiquidity correlates with volatility regime, holidays
+       and crisis periods. The excluded 10-16% is not a random 10-16%. The
+       per-era floor BOUNDS this; it does not remove it. This is the genuine
+       cost of moving the gate from instrument to session and no threshold
+       choice avoids it."
+    - "FRESHNESS IS NOT ACCURACY. E4/E5 establish that atr_prev was built from
+       bars that existed, not that its LEVEL is right. docs/DATA_AUDIT.md 2
+       found HF understates range on big-move days. Every target divides by
+       this number, so an understated ATR inflates all targets symmetrically -
+       a scale effect, not a sign effect, but it means target magnitudes are
+       NOT directly comparable to Run 1's."
+    - "EEM IS A NAMED WATCH-ITEM. At 77.09% eligible in 2006-2009 it is the
+       weakest admitted name on the era floor. It clears with room and is
+       admitted, but if Step 2 shows its contribution concentrated post-2010
+       that is a limitation to report, not a reason to drop it after the fact."
+    - "NO RATES EXPOSURE. Dropping TLT leaves four equity ETFs and gold. A
+       result generalises to liquid US-listed equity ETFs plus gold, pre-2022
+       consolidated tape, and to nothing else."
+    - "SURVIVORSHIP. All five names were chosen with hindsight of their
+       survival, as in Run 1."
+    - "OFFICIAL OPEN EXTREMES AND MAE/MFE ARE UNSUPPORTED by this source
+       (spec-study-B.md 7) and are not used."
+
+  period: {start: PENDING, end: PENDING}
+  holdout_sealed: {start: PENDING, end: PENDING}
+  bar_timestamp_convention: PENDING   # VERIFY, never assume
+  timezone_of_raw_stamps: PENDING
+  adjustment_convention: multiplicative_back_adjusted
+  tick_size: PENDING
+  session_calendar_source: PENDING
+  snapshot_hash: PENDING
+
+# ---------------------------------------------------------------------------
+# Targets — FROZEN 2026-08-25, windows locked
+# ---------------------------------------------------------------------------
+targets:
+  atr_normaliser: "ATR_20 evaluated at the LAST 5-minute bar of the prior
+    session (core.wilder_atr_prev at that timestamp). Causal by construction:
+    uses no information from session t."
+  observation_unit: one_per_session_per_instrument
+
+  T1:
+    definition: "(Close_09:35 - Close_09:30) / ATR_20(prior close)"
+    role: diagnostic_only
+    gates_verdict: false
+    trial_increment: 0
+    purpose: "bounce check (mechanism M3). It can EXPLAIN AWAY part of a T2 or
+      T3 result. It cannot produce one."
+  T2:
+    definition: "(Close_12:00 - Close_09:35) / ATR_20(prior close)"
+    role: PRIMARY
+    gates_verdict: true
+    trial_increment: 1
+  T3:
+    definition: "(Close_15:55 - Close_09:35) / ATR_20(prior close)"
+    role: second_pre_declared_target
+    gates_verdict: false
+    always_reported: true
+    trial_increment: 1
+    note: "15:55 is the open-labelled bar whose close is the official RTH
+      close; on a close-labelled feed the equivalent stamp is 16:00. On an
+      early-close half-day the session's own last bar is the endpoint."
+
+  # FROZEN SENTENCE. Changing it now would be re-specification on a result.
+  t3_only_rule: >
+    A T3-only effect with null T2 is NOT a second product. T3 being
+    pre-declared means a T3 result is ADMISSIBLE - it is not dismissed as
+    noise merely because T2 was null - but T2 remains the target the verdict
+    is decided on. A stable T3 with a null T2 is reported as exactly that, and
+    is a candidate for a future study, not a finding this study delivers.
+
+  t1_reading_rule: >
+    If T1 shows a negative, stable effect and NEITHER T2 NOR T3 shows the same
+    effect in size and stability, T1 is read as consistent with bid-ask bounce
+    / spread mechanics, not reported as a standalone fade signal.
+
+  # T2 and T3 do NOT run on identical session sets - the 12:00 bar is missing
+  # slightly more often than the closing bar. Consequences, both mandatory:
+  separate_session_sets:
+    n_eff_computed_separately: true
+    comparisons_on_intersection: true   # any T2-vs-T3 contrast (mechanism
+                                        # ranking) uses the intersection only
+
+# ---------------------------------------------------------------------------
+# Missing-open rule — FROZEN
+# ---------------------------------------------------------------------------
+missing_open_policy: drop
+# The official question names the 09:30 bar. Scoring whichever bar appears
+# first instead would change the object of study on ~10-15% of sessions and
+# would need its own H1 sentence. Drop is also what a live filter would do: a
+# missing print in THIS recording says nothing about the live feed, and the
+# honest response is "no observation", not a silent substitution.
+
+# ---------------------------------------------------------------------------
+# Normalisation — NEW DESIGN DECISION, not inherited
+# ---------------------------------------------------------------------------
+# Run 1's trailing percentile was bucketed by intraday time-of-day (30-minute
+# slots) because it had 13 slots per session. Study B has exactly ONE slot -
+# the open - so the window and min_obs must be re-expressed in SESSIONS rather
+# than bars. Same numbers, new unit. This is a design decision, declared here
+# rather than improvised in code, per spec-study-B.md 10.
+normalisation:
+  type: trailing_percentile
+  strictly_prior: true
+  tod_bucketed: false           # one slot; bucketing is vacuous
+  unit: sessions
+  window: 500                   # ~2 years of sessions
+  min_obs: 250                  # ~1 year; this is the warm-up cost
+  applies_to: [DQ, DIR, CONV]
+
+# ---------------------------------------------------------------------------
+# Evaluation — FROZEN
+# ---------------------------------------------------------------------------
+evaluation:
+  blocks:
+    length_sessions: 63
+    min_blocks: 20              # CALENDAR blocks, not instrument-blocks
+    overlapping: false
+    expected: ~55               # stamped at Step 2
+  warmup_sessions: 250          # normalisation.min_obs, in sessions
+  holdout_sessions: 252
+  ic_method: spearman
+  n_eff_required: true
+  bootstrap: {type: stationary_block, mean_block: 21, resamples: 10000}
+  # mean_block 21 sessions, NOT Run 1's 78. Run 1's 78 was one session of
+  # 5-minute bars; Study B's observations are one per session, so the
+  # equivalent dependence unit is measured in sessions (~1 month).
+  permutation: {draws: 1000, preserve: [marginals]}
+  rho_bar_measured_at_step_2: true
+  # K_eff must be MEASURED on real opening-bar scores before Step 5. Every
+  # rho_bar below is an assumption. If measured rho_bar exceeds 0.55, power
+  # is worse than every row in power_analysis and Verdict B is near-certain.
+
+holdout:
+  sessions: 252
+  looks: 1
+  timing: after_step_5_on_evaluation_history
+  role: >
+    CONFIRM THE SIGN FROZEN AT STEP 5, nothing more. It cannot re-estimate an
+    effect size, discover a direction, or serve as a second exploration pass.
+    Because H1 is two-sided there is no pre-declared direction for it to check
+    against; it checks whatever sign the evaluation history produced, frozen
+    before the seal is broken.
+  expected_observations: ~1030 raw across 5 names, ~345-470 effective
+  underpowered_by_design: true
+  # ~350-470 effective observations is far below any detection threshold here.
+  # That is expected and is NOT to be read as a power failure of the holdout:
+  # it is not being asked to estimate anything.
+
+# ---------------------------------------------------------------------------
+# Power — computed BEFORE freeze, on MEASURED session counts
+# ---------------------------------------------------------------------------
+power_analysis:
+  K: 5
+  mean_usable_T2_sessions: 3335
+  mean_usable_T3_sessions: 3357
+  # Evaluation history = usable sessions - warm-up (250) - holdout (~207).
+  mean_evaluation_sessions: 2879
+  K_eff_formula: "K / (1 + (K-1) * rho_bar)"
+  t_critical_single: 3.0
+  t_critical_two_trial: 3.21    # Bonferroni over the 2-target family
+  detectable_IC_evaluation_two_trial:
+    rho_bar_0.30: 0.0397
+    rho_bar_0.40: 0.0431
+    rho_bar_0.45: 0.0448
+    rho_bar_0.50: 0.0463
+  breadth_ceiling_note: >
+    K_eff -> 1/rho_bar as K -> infinity at fixed session count, so no amount
+    of breadth crosses these floors. The 5-name universe already reaches most
+    of what breadth can deliver at these correlations. More tickers do not
+    create more years.
+
+# ---------------------------------------------------------------------------
+# Expected outcome — RECORDED BEFORE THE RUN, at operator instruction
+# ---------------------------------------------------------------------------
+expected_effect_size:
+  IC: [0.01, 0.03]              # the plausible band, unchanged from Run 1
+  detectable_IC_this_study: [0.040, 0.046]
+
+expected_verdict: B_underpowered
+expected_verdict_statement: >
+  VERDICT B IS THE EXPECTED OUTCOME of this study, unless |IC| lands at the
+  very top of, or above, the 0.01-0.03 plausible band.
+
+  The detectable floor on the evaluation history, after the two-trial
+  correction, the 250-session warm-up and the 252-session holdout, is
+  0.040-0.046 depending on the realised rho_bar. The plausible band tops out
+  at 0.03. A true effect anywhere inside that band is therefore INVISIBLE to
+  this study by construction.
+
+  This is stated in advance so that a null is read correctly: a null result
+  here is UNINFORMATIVE, not evidence of absence. It does not reject the
+  opening-bar hypothesis; it fails to test it at the resolution that would
+  matter.
+
+  Note also that 0.046 sits close to suspicion_threshold.IC (0.05). At
+  rho_bar >= 0.5 the smallest effect this study could detect is already in
+  territory the pre-registration says to treat as a probable bug. If a result
+  lands there, the 5.6 pipeline canaries are re-run before it is believed.
+
+suspicion_threshold:            # above this, assume a bug and re-run all canaries
+  IC: 0.05
+
+# ---------------------------------------------------------------------------
+# Hypothesis — TWO-SIDED. No direction is assumed.
+# ---------------------------------------------------------------------------
+# Study B is EXPLORATION OF EXISTENCE, not a locked-direction replication of
+# Run 1's claim. Run 1's H1 was signed and a reversal was a rejection (K7).
+# That was right for a replication. It is wrong here: locking a direction
+# would make a stable negative result indistinguishable from noise in the gate
+# logic, which is the opposite of "find out whether a relationship exists,
+# then describe its sign".
+hypotheses:
+  H1: >
+    DQ on the true 09:30 bar is associated with the primary forward window T2.
+    Direction is not assumed. Verdict A requires |effect| above the
+    pre-declared floor and stability across blocks. The observed sign is
+    reported as a description. A trading rule in that direction requires
+    unused data.
+  H1_applies_identically_to: T3
+  H2: "|quadrant spread| on T2 exceeds zero with its CI excluding zero, and
+    its sign agrees with the block-majority IC sign"
+  H3: "|mean T2| is larger in the extreme DQ_pct buckets than in the middle"
+
+two_sided_notes:
+  - "Two-sided does NOT relax the floor. It removes the sign restriction on
+     which side of the floor counts. n_eff and K_eff come from the sampling
+     variance of the estimator and are identical either way; a two-sided test
+     at the same alpha is very slightly LESS sensitive, not more."
+  - "A finding of 'negative and stable' is exactly as complete a Verdict A as
+     'positive and stable'. Neither is privileged."
+  - "What is NOT permitted is choosing which competing mechanism explains a
+     result after seeing its sign. The mechanisms are pre-declared below and
+     ranked by fit."
+  - "Whichever sign is observed, this study has just spent its data
+     DISCOVERING that sign. A directional trading rule built on it, in either
+     direction, is a separate later study on data Study B has not touched."
+
+# ---------------------------------------------------------------------------
+# Competing mechanisms — PRE-DECLARED, closed to later addition
+# ---------------------------------------------------------------------------
+# A fourth mechanism may NOT be introduced after seeing the data to explain a
+# result that does not fit these three.
+mechanisms:
+  M1_continuation:
+    predicts: "same-sign effect on T2 as DQ; not concentrated in T1 alone"
+    signature: "stable T2 same-signed as DQ; T1 similar sign but weaker"
+  M2_fade_overshoot:
+    predicts: "opposite-sign effect on T2; growing from T1 to T2"
+    signature: "stable T2 opposite-signed to DQ; T1 same sign as T2, smaller"
+  M3_bounce:
+    predicts: "opposite-sign effect on T1 that does NOT persist to T2"
+    signature: "T1 negative, T2 effect much smaller or absent"
+  no_clean_fit_is_a_valid_outcome: >
+    "Does not match any pre-declared mechanism" is a legitimate, complete
+    result. It is not a gap to be patched with a fourth story.
+
+# ---------------------------------------------------------------------------
+# Trial accounting — APPEND ONLY
+# ---------------------------------------------------------------------------
+# The verdict-bearing family is TWO: T2 and T3. Both are pre-declared, both are
+# always reported, and the Bonferroni correction runs over both (t 3.0 -> 3.21).
+#
+# Counting T3 as a trial is deliberate and costs power. The alternative -
+# computing T3 and calling it a "diagnostic" - would have bought the look for
+# free by relabelling it. A quantity that is computed and looked at is a trial
+# whether or not the spec says so.
+n_trials_declared: 2
+n_trials_executed: 0
+trial_log: []
+
+diagnostics_always_reported:
+  # Reported unconditionally on EVERY run, cannot gate a verdict, and
+  # therefore do not enter the correction. Reporting them unconditionally is
+  # precisely what keeps that true - a diagnostic reported only when it looks
+  # good is a trial.
+  - T1
+  - decile bucket table on DQ_pct
+  - quadrant table (sign(DIR) x CONV_pct >= 0.5)
+  - per-era eligible rate and per-era IC
+  - per-instrument block IC
+  - rho_bar and K_eff
+
+# ---------------------------------------------------------------------------
+# Decision gates — FROZEN. Two-sided variants of Run 1's, not new tests.
+# ---------------------------------------------------------------------------
+decision_gates:
+  evaluated_on: T2               # T3 evaluated identically and reported, never gating
+  detected_requires_all: [G1, G2, G3, G4, G5, G6, G7]
+  G1: "|mean IC| >= 0.010 on T2"
+  G2: "|IC t-statistic| >= 3.21 on n_eff, block-bootstrap se (two-trial critical value)"
+  G3: "consistency ratio >= 0.65 of blocks carrying the BLOCK-MAJORITY sign
+       (two-sided: the majority sign is read from the data, not pre-declared)"
+  G4: "Jonckheere-Terpstra p < 0.05 AND |bucket-index Spearman rho| >= 0.60
+       AND that rho's sign agrees with the block-majority IC sign"
+  G5: "|quadrant spread H2| CI excludes zero AND its sign agrees with the
+       block-majority IC sign"
+  G6: "permutation p < 0.01 AND survives BH-FDR at q = 0.10 across the
+       2-target family"
+  G7: "composite DQ beats its best single component (BD, CL, SA) on |mean IC|"
+
+  none_if_any: [K1, K2, K3, K4, K5, K6, K8, K9]
+  K1: "|mean IC| < 0.005 or |IC t| < 1.5"
+  K2: "consistency ratio < 0.50"
+  K3: "no monotonicity (JT p > 0.10) AND no significant extreme-vs-middle difference"
+  K4: "quadrant spread H2 CI includes zero"
+  K5: "observed statistic inside permutation null central 95%"
+  K6: "effect present in only one or two of >= 20 blocks"
+  K8: "any 5.6 pipeline canary fails (synthetic null, future canary, noise
+       canary, shift invariance)"
+  K9: "INTERNAL SIGN INCOHERENCE: the bucket-gradient sign, the quadrant-spread
+       sign and the block-majority IC sign do not all agree"
+
+  # K7 IS DELIBERATELY ABSENT. Run 1's K7 killed a result whose sign reversed
+  # the pre-registered direction. Study B pre-registers no direction, so K7 has
+  # nothing to test and carrying it over would silently re-impose the locked
+  # sign that 1 removes. K9 replaces the protection K7 actually provided:
+  # a result must be internally consistent about its own sign, even though that
+  # sign is not declared in advance.
+  k7_removed_because: "H1 is two-sided; see two_sided_notes"
+
+verdicts:
+  A_detected: "all of G1-G7 pass on T2 and no kill condition fires"
+  B_underpowered: "n_eff or calendar-block count below the pre-registered
+    minimum, or the detectable floor exceeds the effect actually present -
+    EXPECTED OUTCOME, see expected_verdict"
+  C_no_useful_predictivity: "default"
+default_verdict: no_useful_predictivity
+
+# ---------------------------------------------------------------------------
+# Pipeline — reused unchanged. No rewrite.
+# ---------------------------------------------------------------------------
+pipeline:
+  reused_unchanged:
+    - stage1/core.py           # candle_features, DQ, degenerate gate, w_range
+    - stage1/io.py
+    - stage1/validate.py       # + a pre-registered eligibility-rule scope
+    - stage1/gates.py          # canaries must pass before any result is trusted
+    - stage1/stats.py          # effective_sample_size, JT, evaluate_gates
+    - stage1/dataset.py        # global_block_map partitions by session date
+    - stage1/run_all.py        # validate -> power -> gates -> test, stop at first gate
+  new_code_allowed:
+    - stage1/opening_selector.py
+  new_code_scope: >
+    Applies E1-E6 per session; reads DQ and components already computed by
+    candle_features on the 09:30 row only; looks up Close_09:35 / 12:00 / 15:55
+    from the same validated frame; applies the session-unit trailing
+    percentile; emits one row per (instrument, session) with score, T1, T2, T3
+    and calendar block. Nothing else. The existing Step 5 machinery consumes
+    that file exactly as it consumes bar-level r_1 today.
+
+execution_order:
+  - "Step 1  stage1.validate on all five names, with the eligibility rule"
+  - "Step 2  power: n_eff, K_eff, rho_bar, CALENDAR block count. STOP if short."
+  - "Step 3  canaries (K8). STOP on any failure."
+  - "Step 4  opening_selector -> one row per instrument-session"
+  - "Step 5  IC, buckets, quadrants on T2 and T3. First execution increments
+      n_trials_executed to 2."
+  - "Step 6  freeze the observed sign, then open the holdout. One look."
+stop_at_first_gate: true
+
+negative_conclusion_text: >
+  Continuous candle geometry on the opening 5-minute bar shows no
+  statistically detectable association with forward returns to midday (T2) or
+  to the close (T3), at the resolution this study can resolve. Given the
+  pre-registered detectable floor of 0.040-0.046 against a plausible band of
+  0.01-0.03, this is a statement about the study's power as much as about the
+  market, and is reported as such.
