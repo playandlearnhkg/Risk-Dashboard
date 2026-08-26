@@ -11,6 +11,26 @@
 | **Audience** | Engineering manager; incoming developer |
 | **Related document** | `daily_dashboard/SPEC.md` — the *build* specification for all 7 layers. This document describes what **is**; SPEC.md describes what is **intended**. |
 
+### Document map
+
+| § | Section | Read it for |
+|---:|---|---|
+| 1–4 | Summary, Purpose, Information, Overview | What the system is and why |
+| 5–6 | Architecture, Current Features | How it is put together, what exists today |
+| **7** | **Core Model (Layer 0) with formulas** | The Meridian regime engine, exactly |
+| 8–9 | Data Sources, Tech Stack | Providers; Streamlit→Marimo, pandas→Polars |
+| 10–13 | Gaps, Decisions, Open Questions, Next Steps | Planning and hand-over judgement |
+| 14–15 | How to Run, Handover Notes | Getting it working on a new machine |
+| **16** | **Glossary** | **Start here if the two 0–100 scores confuse you** |
+| **17** | **Output contracts** | JSON field lists, DB schemas, real examples |
+| **18** | **Target UI spec — Regime & Capital Flow** | What to build next, in detail |
+| **19** | **risk-dashboard model reference** | All 8 components: sub-metrics and thresholds |
+| **20** | **Daily operating workflow** | Morning checklist; local vs view-only |
+| **21** | **Acceptance criteria** | Testable Definition of Done |
+| **22** | **Known environment issues** | Windows, paths, first-run |
+| **23** | **Data freshness** | Per-indicator lag and update frequency |
+| **24** | **What could not be confirmed from code** | Honest limits of this document |
+
 ---
 
 ## 1. Executive Summary
@@ -1046,6 +1066,960 @@ Both applications read this same CSV — one copy in the repository, not two tha
 ### Contact and provenance
 
 Sole maintainer to date: the repository owner (`playandlearn.hkg@gmail.com`). All design decisions in §11 are theirs and are recorded with rationale in code comments and commit messages. Where this document and the code disagree, **the code is correct and this document is stale** — please fix it.
+
+---
+
+## 16. Glossary
+
+### 16.1 The two 0–100 scores — read this first
+
+The system contains **two different composite scores, both on a 0–100 scale, running in opposite directions.** This is the single most likely source of a serious misreading.
+
+| | **Stress Score** | **Regime Score** |
+|---|---|---|
+| **Produced by** | risk-dashboard (`scoring.py`) | Meridian Layer 0 (`regime/composite.py`) |
+| **Field name** | `RiskAssessment.composite` | `composite_score` |
+| **0 means** | Total calm | Maximum risk-**off** |
+| **100 means** | Maximum **danger** | Maximum risk-**on** |
+| **Direction** | **Higher is worse** | **Higher is better** |
+| **Bands** | Low < 34 ≤ Elevated < 62 ≤ High | Strong Risk-Off < 30 ≤ Mild Risk-Off < 43 ≤ Neutral < 57 ≤ Mild Risk-On < 70 ≤ Strong Risk-On |
+| **Answers** | "How stressed is the system right now?" | "Is capital available and willing?" |
+| **Where seen** | Streamlit UI, every tab | Console, `regime_latest.json` |
+| **Status** | ✅ In production | ✅ Computed; no UI |
+
+> **A worked confusion.** A Stress Score of 85 means *get out of the way*. A Regime Score of 85 means *conditions are supportive*. Identical numbers, opposite instructions. Neither is wrong; they measure different things in different directions.
+
+**Naming convention adopted by this document, and recommended for the code and UI:** never write "the score" unqualified. Write **Stress Score** or **Regime Score**, always. §18.7 specifies how they must be labelled if displayed together.
+
+### 16.2 Capital Availability vs Regime vs Coverage
+
+These three are routinely confused because all three are outputs of the same Layer 0 run.
+
+| Term | What it is | Range / values | Derived from | Answers |
+|---|---|---|---|---|
+| **Capital Availability** | A three-state label | High / Medium / Low / Unknown | The **Money Score alone** (≥62 High, ≥38 Medium) | *Does money exist to be deployed?* |
+| **Regime** | A five-state label plus its score | Strong Risk-Off … Strong Risk-On, 0–100 | Money **×** Behaviour, geometric | *Is capital available **and** willing?* |
+| **Coverage** | A data-quality percentage | 0–100% | Share of indicator **weight** that returned data | *How much of the model actually ran?* |
+
+**Why Capital Availability excludes behaviour.** So the system can report *"money is abundant but nobody wants risk"* — Capital High with Regime Strong Risk-Off. Historically the setup preceding violent recoveries. Folding behaviour in would collapse that into a single mid reading and destroy the information.
+
+**Why Coverage is not a confidence score.** It measures *how much of the model ran*, not *how right it is*. 100% coverage on a badly specified model is still a bad answer. But **below ~60% coverage the composite should not be treated as a regime call at all** — see the live example in §23.3, where a Regime Score of 90.2 "Strong Risk-On" was produced from 47% behaviour coverage.
+
+### 16.3 Other terms
+
+| Term | Meaning |
+|---|---|
+| **Ramp** | Linear map from a raw value to a score between two named thresholds. Handles both directions without a flag. §7.2.1 |
+| **Percentile score** | Rank of the latest observation in its own trailing window. For series with no natural absolute scale. §7.2.2 |
+| **Trend percentile** | Percentile of the *rate of change* rather than the level. Where direction carries the signal. §7.2.3 |
+| **Escalation** | A named rule that *floors* the Stress Score when a dangerous combination is present that a weighted average would bury. §7.10 |
+| **Money Score** | 0–100, the money-availability half of the core model. 100 = most money available. |
+| **Behaviour Score** | 0–100, the risk-appetite half. 100 = most risk-on. |
+| **Matrix score** | An integer −2…+2 preference for a sector or asset class in the current regime. Pure theory, from config. |
+| **Momentum rank** | 0–100 rank of a sector's 60-day return *relative to SPY* within the peer set. Pure observation. |
+| **Blended score** | 0.60 × matrix + 0.40 × momentum rank, both on 0–100. The ranking key for the rotation scan. |
+| **Favored** | A sector with `matrix_score ≥ 1`. Note: matrix stance only — momentum does not make a sector favored, only ranks it. |
+| **Signal (Form 4)** | An insider transaction with code **P** (open-market purchase) or **S** (open-market sale). Codes A/M/F/G/C/D are compensation mechanics and are stored but excluded. |
+| **Cluster buy** | 3+ distinct insiders buying the same name within 30 days. |
+| **Provider fallback** | The configured provider could not run (missing key, unimplemented stub), so a working one was substituted. Always reported, never silent. |
+| **Fixed source** | A data role with exactly one implementation and no provider abstraction: `macro` (FRED), `filings` (SEC EDGAR), `margin_debt` (FINRA). |
+| **Placeholder (margin data)** | A row flagged `is_placeholder`. **Excluded from scoring entirely** — never scored as calm. |
+| **Layer** | One of Meridian's seven tiers. Layers 0–1 built; 2–7 not started. |
+| **Stale ticker** | A ticker whose newest stored price is older than the universe's newest stored price. |
+
+---
+
+## 17. Output Contracts
+
+> Every example below is **real output** from the run of 2026-08-21, not illustrative. Values are abridged where marked `…`.
+
+### 17.1 `daily_dashboard/output/regime_latest.json` — ✅ Written
+
+**Producer:** `run_regime.py`, unless `--no-persist`. **Consumers today: none.** This is the file the Regime & Capital Flow page (§18) must read.
+
+#### Top-level fields
+
+| Field | Type | Notes |
+|---|---|---|
+| `run_date` | string, ISO date | The engine's run date, not the data's as-of date |
+| `composite_score` | float 0–100 | **Regime Score.** 100 = risk-on. Never null — defaults to 50.0 with a warning |
+| `regime_key` | string | One of `strong_risk_on`, `mild_risk_on`, `neutral`, `mild_risk_off`, `strong_risk_off` |
+| `regime_label` | string | Human label, e.g. `"Strong Risk-On"` |
+| `money_score` | float 0–100 \| **null** | Null if no money indicator scored |
+| `behavior_score` | float 0–100 \| **null** | Null if no behaviour indicator scored |
+| `capital_status` | string | `High` \| `Medium` \| `Low` \| `Unknown` |
+| `combination_method` | string | `geometric` \| `product` \| `weighted` |
+| `coverage` | float 0–1 | Mean of the two coverages. **Note: 0–1, not 0–100** |
+| `money_coverage` | float 0–1 | |
+| `behavior_coverage` | float 0–1 | |
+| `factor_multipliers` | object | 8 float values, keyed by factor name |
+| `warnings` | array of string | **Must be surfaced in any UI.** Empty array when clean |
+| `money_indicators` | array[5] of Indicator | See below |
+| `behavior_indicators` | array[6] of Indicator | See below |
+| `sectors` | array[11] of Sector | |
+| `asset_classes` | array[10] of AssetClass | |
+| `weekly_process` | object | |
+
+#### Indicator object (13 fields, identical in both blocks)
+
+| Field | Type | Notes |
+|---|---|---|
+| `key` | string | e.g. `vix_level` |
+| `label` | string | Title-cased from `key`. **Cosmetically poor** — `mmf_aum` → `"Mmf Aum"`. A UI should map its own labels |
+| `score` | float 0–100 \| **null** | **Null means unavailable.** Never treat as 0 |
+| `raw_value` | float \| null | The underlying number |
+| `display` | string | Pre-formatted with units, or `"n/a"` |
+| `weight` | float | As configured, before renormalisation |
+| `method` | string | `ramp` \| `percentile` \| `trend_percentile` \| `yoy_ramp` |
+| `direction` | string | `up` \| `down` |
+| `source` | string | **Reports the effective source**, e.g. `"fred:VIXCLS"` after a fallback |
+| `as_of` | string ISO date \| null | **The data's date, not the run's.** See §23 |
+| `note` | string | Explanatory text from config |
+| `error` | string | Populated only when `score` is null, e.g. `"no data returned"` |
+| `detail` | object | Method-dependent: `{risk_on_at, risk_off_at}` for ramp, `{lookback_days}` for percentile, `{trend_days, trend_pct}` for trend, `{calm, stress, level_musd}` for yoy_ramp |
+
+#### Sector, AssetClass, weekly_process objects
+
+```
+Sector      { ticker, name, matrix_score, momentum_pct, blended_score, favored }
+AssetClass  { key, matrix_score, proxy }
+weekly_process {
+  summary: "3/4 steps current", all_current: bool,
+  steps: [ { id, order, name, description, auto, status, last_completed,
+             days_since, display_age, notes } ]
+}
+```
+
+> **⚠️ Contract inconsistency — two payload shapes.** `run_regime.py --json` (stdout) and `regime_latest.json` (file) are **not identical**, despite both being "the Layer 0 payload":
+>
+> | | stdout (`--json`) | file |
+> |---|---|---|
+> | Sector `stance` | ✅ present | ❌ absent |
+> | AssetClass `name` | ✅ present | ❌ absent |
+> | AssetClass `stance` | ✅ present | ❌ absent |
+>
+> A consumer written against one breaks on the other. **Recommend unifying on the richer stdout shape** before anything depends on the file. Until then, a UI must derive `stance` from `matrix_score` via the −2…+2 → label map itself.
+
+#### Real example (abridged)
+
+```json
+{
+  "run_date": "2026-08-21",
+  "composite_score": 90.2,
+  "regime_key": "strong_risk_on",
+  "regime_label": "Strong Risk-On",
+  "money_score": 85.9,
+  "behavior_score": 94.8,
+  "capital_status": "High",
+  "combination_method": "geometric",
+  "coverage": 0.735,
+  "money_coverage": 1.0,
+  "behavior_coverage": 0.47,
+  "factor_multipliers": {
+    "momentum": 1.4, "growth": 1.3, "value": 0.7, "quality": 0.75,
+    "revisions": 1.15, "insider": 1.0, "short_interest": 0.9,
+    "institutional": 1.0
+  },
+  "warnings": [
+    "Only 47% of behaviour indicator weight had data — treat this score as provisional."
+  ],
+  "money_indicators": [
+    {
+      "key": "mmf_aum", "label": "Mmf Aum", "score": 100.0,
+      "raw_value": 8289569.0, "display": "8289569.00", "weight": 0.25,
+      "method": "percentile", "direction": "up", "source": "fred",
+      "as_of": "2026-01-01", "note": "Dry powder parked in money funds",
+      "error": "", "detail": { "lookback_days": 1825 }
+    }
+  ],
+  "behavior_indicators": [
+    {
+      "key": "vix_level", "label": "Vix Level", "score": 88.9,
+      "raw_value": 14.89, "display": "14.89", "weight": 0.22,
+      "method": "ramp", "direction": "down", "source": "fred:VIXCLS",
+      "as_of": "2026-08-19", "note": "Implied equity volatility",
+      "error": "", "detail": { "risk_on_at": 13.0, "risk_off_at": 30.0 }
+    },
+    {
+      "key": "vix_term_structure", "label": "Vix Term Structure",
+      "score": null, "raw_value": null, "display": "n/a", "weight": 0.13,
+      "method": "ramp", "direction": "down", "source": "yahoo_ratio",
+      "as_of": null, "note": "VIX / VIX3M -- above 1.0 is backwardation",
+      "error": "no data returned", "detail": {}
+    }
+  ],
+  "sectors": [
+    { "ticker": "XLK", "name": "Technology", "matrix_score": 2,
+      "momentum_pct": null, "blended_score": 100.0, "favored": true }
+  ],
+  "asset_classes": [
+    { "key": "em_equity", "matrix_score": 2, "proxy": "EEM" }
+  ],
+  "weekly_process": {
+    "summary": "3/4 steps current",
+    "all_current": false,
+    "steps": [
+      { "id": "macro_vol_check", "order": 1,
+        "name": "Macro & Volatility / Regime Check",
+        "description": "Read VIX level and term structure, HY spreads...",
+        "auto": true, "status": "current", "last_completed": "2026-08-21",
+        "days_since": 0, "display_age": "today",
+        "notes": "Strong Risk-On · composite 90/100 · behaviour 94.8" }
+    ]
+  }
+}
+```
+
+### 17.2 `daily_dashboard/output/system_status.json` — ✅ Written and consumed
+
+**Producer:** `run_data.py` only. **Consumer:** `data_sources_panel.py` (Streamlit sidebar) ✅.
+
+Written by **merge**, not overwrite, so the two entry points cannot erase each other's blocks. Any consumer must therefore treat **every top-level block as optional.**
+
+| Field | Type | Notes |
+|---|---|---|
+| `providers` | array | One per provider-backed role: `market_data`, `fundamentals`, `transcripts` |
+| `providers[].role` | string | |
+| `providers[].requested` | string | What `config.yaml` asked for |
+| `providers[].effective` | string | What actually ran |
+| `providers[].fell_back` | bool | `requested != effective` |
+| `providers[].note` | string | Reason for the fallback; empty when none |
+| `fixed_sources` | array | Constant, 3 entries: FRED, SEC EDGAR, FINRA |
+| `rate_limit.rate_limited` | bool | |
+| `rate_limit.hits` | int | Count of HTTP 429s |
+| `rate_limit.cooldowns` | int | Count of cooldown pauses taken |
+| `rate_limit.aborted` | bool | **True = the fetch stopped early; prices are partial** |
+| `rate_limit.first_hit_at` | string \| null | |
+| `rate_limit.checked_at` | string ISO datetime | |
+| `price_coverage.latest_date` | string \| null | Newest stored price date |
+| `price_coverage.tickers` | int | |
+| `price_coverage.stale_tickers` | int | |
+| `last_ingest.run_id` | string | 12 hex chars |
+| `last_ingest.finished_at` | string ISO datetime | |
+| `last_ingest.elapsed_sec` | float | |
+| `last_ingest.stages` | object | Stage name → human-readable result |
+| `updated_at` | string ISO datetime | Always written |
+
+#### Real example
+
+```json
+{
+  "providers": [
+    { "role": "market_data",  "requested": "yfinance", "effective": "yfinance",
+      "fell_back": false, "note": "" },
+    { "role": "fundamentals", "requested": "yfinance", "effective": "yfinance",
+      "fell_back": false, "note": "" },
+    { "role": "transcripts",  "requested": "fmp",      "effective": "yfinance",
+      "fell_back": true,  "note": "'fmp' needs FMP_API_KEY in .env" }
+  ],
+  "fixed_sources": [
+    { "role": "macro",        "effective": "FRED" },
+    { "role": "sec_filings",  "effective": "SEC EDGAR" },
+    { "role": "margin_debt",  "effective": "FINRA (manual CSV)" }
+  ],
+  "rate_limit": {
+    "rate_limited": false, "hits": 0, "cooldowns": 0, "aborted": false,
+    "first_hit_at": null, "checked_at": "2026-08-20T17:42:34"
+  },
+  "price_coverage": { "latest_date": null, "tickers": 0, "stale_tickers": 0 },
+  "last_ingest": {
+    "run_id": "2e9f15124cf7",
+    "finished_at": "2026-08-20T17:42:34",
+    "elapsed_sec": 13.9,
+    "stages": { "universe": "503 constituents (+0/-0), 34 benchmark/ETF tickers, source=cache" }
+  },
+  "updated_at": "2026-08-20T17:42:34"
+}
+```
+
+> **⚠️ Docstring/code discrepancy.** `core/status.py`'s module docstring states the file is *"Written to `output/system_status.json` by run_data.py **and run_regime.py**."* **`run_regime.py` does not import or call `write_status`.** Only `run_data.py` does. Consequence: after a regime-only run the status file still reflects the last *ingest*, so `updated_at` can be days older than `regime_latest.json`. A UI must not use `system_status.updated_at` as the regime's freshness. Either fix the docstring or add the call — do not leave both.
+
+### 17.3 `regime_history` table — ✅ Written, ❌ never read
+
+**Producer:** `regime/composite.persist()`, one row per day, `INSERT OR REPLACE` so a rerun overwrites the same day.
+
+```sql
+CREATE TABLE IF NOT EXISTS regime_history (
+    run_date        TEXT PRIMARY KEY,   -- ISO date; one row per day
+    composite_score REAL,               -- Regime Score, 100 = risk-on
+    regime_label    TEXT,               -- "Strong Risk-On" etc.
+    money_score     REAL,               -- nullable
+    behavior_score  REAL,               -- nullable
+    capital_status  TEXT,               -- High | Medium | Low | Unknown
+    detail_json     TEXT,               -- full to_dict() payload, JSON
+    created_at      TEXT
+);
+```
+
+Read back by `composite.history(db, days=180)`, which returns the six scalar columns (**not** `detail_json`) ordered oldest-first. **This is the data source for §18.5's trend charts.** `detail_json` holds the complete indicator-level payload for any date, so a historical drill-down needs no schema change.
+
+> **Caveat for charting:** `run_date` is the *engine run* date, not a market date. Rows exist only for days the engine was actually run — there will be gaps across weekends and any day it was skipped. **Do not assume a continuous daily series.** Plot against the actual dates; do not forward-fill silently.
+
+### 17.4 `weekly_process_log` table — ✅ Written and read
+
+```sql
+CREATE TABLE IF NOT EXISTS weekly_process_log (
+    step_id      TEXT NOT NULL,
+    completed_at TEXT NOT NULL,      -- ISO datetime
+    notes        TEXT,
+    PRIMARY KEY (step_id, completed_at)
+);
+```
+
+Append-only — the key includes the timestamp, so every completion is kept. `WeeklyProcess._hydrate()` reads `MAX(completed_at)` per step. See §20.4.
+
+### 17.5 SQLite tables — and which the dashboard uses
+
+**Verified by search: the Streamlit dashboard imports no SQLite driver and opens no database.** None of `app.py`, `config.py`, `data_sources.py`, `data_sources_panel.py`, `metrics.py`, `scoring.py`, `ui.py`, `margin_debt.py`, `import_finra.py` contains a `sqlite` reference.
+
+The dashboard's inputs are exactly three:
+
+| Input | Type | Path |
+|---|---|---|
+| Live market/macro data | HTTP | Yahoo Finance, FRED |
+| Margin debt | CSV | `data/margin_debt.csv` |
+| Meridian status | JSON file | `daily_dashboard/output/system_status.json` |
+
+This is deliberate (§5.3) and **is why the dashboard runs with no setup at all**. Preserve it: a database dependency would make the dashboard unusable on a machine where Meridian has never run.
+
+**All 14 tables in `cache/meridian.db`** (Meridian-only today):
+
+| Table | Primary key | Written by | Read by dashboard? |
+|---|---|---|---|
+| `universe` | `ticker` | stage 1 | ❌ |
+| `daily_prices` | `(ticker, date)` | stage 2 | ❌ |
+| `fundamentals` | `(ticker, period, period_end, statement, item)` | stage 3 | ❌ |
+| `fundamental_ratios` | `(ticker, period, period_end)` | stage 4 | ❌ |
+| `short_interest` | `(ticker, snapshot_date)` | stage 5 | ❌ |
+| `analyst_estimates` | `(ticker, snapshot_date)` | stage 6 | ❌ |
+| `earnings_calendar` | `(ticker, earnings_date)` | stage 7 | ❌ |
+| `filings` | `accession` | stage 8 | ❌ |
+| `filing_sections` | `(accession, section)` | stage 8 | ❌ |
+| `insider_transactions` | `(accession, line_no)` | stage 8 | ❌ |
+| `institutional_holdings` | `(fund_cik, ticker, report_date)` | stage 9 | ❌ |
+| `transcripts` | `(ticker, period)` | optional | ❌ |
+| **`regime_history`** | `run_date` | `run_regime.py` | ❌ **— §18 must change this** |
+| `weekly_process_log` | `(step_id, completed_at)` | `run_regime.py` | ❌ |
+| `ingest_log` | `(run_id, stage)` | `run_data.py` | ❌ |
+
+Snapshot tables (`short_interest`, `analyst_estimates`) key on `(ticker, snapshot_date)` **because accumulating history the vendor does not provide is their entire purpose.** A row must never be overwritten with a later value under the same date — Layer 2's revisions factor is built from exactly these snapshots.
+
+**Recommended access pattern for §18:** open the database **read-only** (`file:…?mode=ro` URI). WAL mode means a reader never blocks an ingest, but a read-only handle also makes it impossible for a UI bug to corrupt ingest data.
+
+---
+
+## 18. Target UI Specification — "Regime & Capital Flow"
+
+> **Status: 📋 PLANNED. None of this exists.** This section is the build spec for the next increment. Acceptance criteria are in §21.
+>
+> **Framework recommendation: build this page in Marimo** (§9, sequencing step 3). It is a new page, so there is no regression risk to the working Streamlit dashboard, and it is the cheapest honest evaluation of the target framework. If Marimo proves unsuitable, the same spec builds in Streamlit unchanged — nothing below depends on the framework.
+
+### 18.1 Purpose and data sources
+
+One page answering, in order: **What regime are we in? Is capital available? Which way is it moving? Do I trust today's reading?**
+
+| Source | Path | Required? |
+|---|---|---|
+| `regime_latest.json` | `daily_dashboard/output/` | **Yes** — page is empty without it |
+| `regime_history` | `cache/meridian.db`, read-only | No — trends degrade gracefully |
+| `system_status.json` | `daily_dashboard/output/` | No — provider strip degrades |
+
+**Read files and the DB directly. Do not import Meridian modules.** The file seam (§5.3) is load-bearing.
+
+### 18.2 Layout — desktop (≥1024px)
+
+```
+┌───────────────────────────────────────────────────────────────────────────┐
+│ A · STATUS BAR                                                            │
+│   REGIME SCORE 90 · Strong Risk-On    Capital: HIGH    Coverage 74%       │
+│   ⚠ Only 47% of behaviour indicator weight had data — provisional         │
+├──────────────────────────────────────┬────────────────────────────────────┤
+│ B · THE CORE MODEL                   │ C · TREND (90d)                    │
+│   Money      ████████████░░  85.9    │   ┌──────────────────────────────┐ │
+│   Behaviour  ██████████████  94.8    │   │  Regime / Money / Behaviour  │ │
+│   ── geometric ──►  90.2             │   │  3 lines + regime bands      │ │
+│   √(85.9 × 94.8) = 90.2              │   └──────────────────────────────┘ │
+├──────────────────────────────────────┴────────────────────────────────────┤
+│ D · INDICATOR DETAIL      [ Money (5) | Behaviour (6) ]                    │
+│   Indicator      Score  Value    As of      Source     Weight   State      │
+│   MMF AUM        100.0  8.29tn   2026-01-01 FRED       0.25     ● 232d old │
+│   VIX Term Str.    n/a  —        —          yahoo      0.13     ✕ no data  │
+├──────────────────────────────────┬────────────────────────────────────────┤
+│ E · SECTOR ROTATION              │ F · ASSET CLASS PREFERENCE             │
+│   ★ XLK Technology  +2  100      │   US Equity          +2  Strong OW  SPY│
+├──────────────────────────────────┴────────────────────────────────────────┤
+│ G · WEEKLY PROCESS      ✓1 ✓2 ✓3 ○4 — Step 4 due    [ Mark complete… ]    │
+├───────────────────────────────────────────────────────────────────────────┤
+│ H · DATA SOURCES & FRESHNESS (collapsed by default)                       │
+└───────────────────────────────────────────────────────────────────────────┘
+```
+
+### 18.3 Required widgets
+
+| ID | Widget | Requirements |
+|---|---|---|
+| **A** | Status bar | Regime Score + label + Capital Availability + Coverage %. **Every `warnings[]` entry rendered verbatim** — never truncated, never collapsed behind a click. Colour always paired with the label text. Sticky on scroll. |
+| **B** | Core model panel | Money and Behaviour as labelled bars, the combination method named, and **the arithmetic shown** (`√(85.9 × 94.8) = 90.2`). Showing the working is the point — §7.1's claim is only legible if the multiplication is visible. |
+| **C** | Trend chart | See §18.5. |
+| **D** | Indicator table | Two tabs (Money 5 / Behaviour 6). Columns: label, score, `display`, `as_of`, `source`, `weight`, state. **Unavailable indicators must be listed, not hidden**, showing `error`. Row tooltip = `note`. Age badge per §23.4. |
+| **E** | Sector rotation | 11 rows sorted by `blended_score`. Columns: ticker, name, matrix score (signed, with stance word), `momentum_pct`, blended. Star the `favored`. **When `momentum_pct` is null for all rows, show "matrix-only — no price data" prominently** — the blend silently became pure theory. |
+| **F** | Asset class | 10 rows sorted by `matrix_score`, with proxy ETF. Derive the stance word locally (see §17.1 contract inconsistency). |
+| **G** | Weekly process | 4 steps with status symbol, name, `display_age`, auto/manual badge. Step 4 needs a completion control — see §20.4. |
+| **H** | Data sources | Provider table from `system_status.json` with fallback warnings; freshness summary. Collapsed by default; **auto-expanded when any `fell_back` is true or `rate_limit.rate_limited` is true.** |
+
+### 18.4 Mobile behaviour (<768px)
+
+1. **Single column**, sections stacked A → H. B/C and E/F unstack.
+2. **Status bar (A) stays sticky** and compresses to: score, label, capital status, coverage. Warnings collapse to a tappable `⚠ 1` chip that expands in place. **The chip must be visible without scrolling** — a provisional score that looks confident on a phone is the worst failure mode this page has.
+3. **Tables scroll horizontally inside their own container.** The page body must never scroll horizontally. Priority columns pinned left: indicator label + score; sector ticker + blended.
+4. **Trend chart:** default window drops 90d → 30d; legend moves below the plot; touch-drag pans rather than selects.
+5. **Minimum touch target 44×44px** for the tab switcher, the process control, and the section H toggle.
+6. **No hover-only information anywhere.** Notes and tooltips must be reachable by tap.
+7. Charts must render legibly at 320px.
+
+### 18.5 Historical trends — how they must be shown
+
+**Data:** `composite.history(db, days)` — `run_date`, `composite_score`, `money_score`, `behavior_score`, `capital_status`.
+
+**Chart 1 — Regime trajectory (primary).**
+- Three lines: Regime Score (emphasis), Money, Behaviour (both lighter).
+- Y-axis fixed **0–100** — never auto-scaled. An auto-scaled axis makes a 4-point wobble look like a regime change.
+- Five horizontal **regime bands** as background shading at 30 / 43 / 57 / 70, labelled at the right edge.
+- Window selector: **30d / 90d / 180d / All**, default 90d.
+- Hover: date, all three scores, regime label, capital status.
+- **Gaps must render as gaps.** Rows exist only for days the engine ran (§17.3). Plot against real dates; never forward-fill silently. If a gap exceeds 3 days, mark it.
+
+**Chart 2 — Capital Availability history (secondary).**
+- A horizontal band chart of High / Medium / Low over time, aligned to Chart 1's x-axis.
+- Because it is a three-state label, **the block boundaries are the information** — do not draw it as a line.
+
+**Required annotation — the interpretation the whole chart exists for:**
+
+> A Regime Score of 55 means something different climbing from 40 than falling from 70. Show the level **and** the trajectory: alongside the current score, display the change over 5 and 20 engine-runs with an explicit direction word (`improving` / `deteriorating` / `flat`), not just an arrow.
+
+**Empty-history behaviour:** with fewer than 2 rows, replace both charts with *"Trend needs at least two runs. Run `run_regime.py` daily to build history."* — **not** a blank panel or a single floating point.
+
+### 18.6 Empty, partial and rate-limited states
+
+Every state must be **explicit and worded**, never a blank region. Colour is never the sole channel.
+
+| # | Condition | Detection | Behaviour |
+|---|---|---|---|
+| 1 | **No Meridian output at all** | `regime_latest.json` absent | Full-page empty state: what the page will show, the exact command (`cd daily_dashboard && python run_regime.py`), expected runtime. **Not an error.** |
+| 2 | **Stale regime** | `run_date` older than today | Amber banner: *"Regime last computed {n} days ago ({date}). Re-run for a current reading."* Render everything normally beneath. |
+| 3 | **Partial coverage** | `coverage < 0.60`, or either half `< 0.60` | **Score displayed with a visible provisional treatment** (hatched bar fill or explicit `~` prefix) plus the `warnings[]` text. **The score must not be presented as a clean regime call.** See §23.3 for why this matters. |
+| 4 | **One half missing** | `money_score` or `behavior_score` is null | Show the surviving half; render the missing one as an explicit "no data" slot, not zero. Banner: *"This is not a capital-availability reading — only the {money/behaviour} half scored."* Suppress the ×/√ arithmetic in panel B. |
+| 5 | **Nothing scored** | `warnings` contains the defaulting message | The 50.0 default must **never** display as "Neutral" without the caveat *"defaulted — no indicators scored"*. |
+| 6 | **Rate-limited ingest** | `system_status.rate_limit.rate_limited` | Red-bordered notice in section H, auto-expanded. If `aborted` is true add: *"fetch stopped early — prices are partial."* Direct to a local re-run. |
+| 7 | **Provider fallback** | any `providers[].fell_back` | Amber notice naming requested → effective and the `note`. Section H auto-expands. |
+| 8 | **Sector scan matrix-only** | all `momentum_pct` null | Inline caption on section E: *"Matrix-only — no price data. Relative strength is not contributing."* |
+| 9 | **No status file** | `system_status.json` absent | Section H shows *"Layer 1 has not run"*. **Never block the rest of the page.** |
+| 10 | **Individual indicator down** | `score` null | Row present, greyed, `error` shown, weight struck through to signal exclusion. |
+
+### 18.7 Displaying both scores together — required labelling
+
+If the Regime Score and the Stress Score ever appear on one screen, **all six rules are mandatory.** This is the highest-risk UI decision in the system (§16.1).
+
+1. **Never label either as "score" alone.** Always the full name: **Regime Score** / **Stress Score**.
+2. **Always attach the direction inline**, not in a legend or tooltip:
+   - `Regime Score 90 / 100 — higher = more risk-on`
+   - `Stress Score 41 / 100 — higher = more danger`
+3. **Never place them adjacent on the same axis or in the same row of tiles.** Separate cards, visually distinct, with a divider.
+4. **Do not colour them on a shared scale.** Green-at-100 for Regime and green-at-0 for Stress in the same viewport is precisely the confusion to avoid. Use the traffic-light meaning (green = good) computed per score, and **write the state word beside each** — `Supportive`, `Elevated stress`.
+5. **State the relationship explicitly** where both appear: *"These measure different things in opposite directions. A high Regime Score is supportive; a high Stress Score is dangerous."*
+6. **Never compute a difference, ratio, average or combined gauge from the two.** They share a range by coincidence, not by construction. Any arithmetic across them is meaningless.
+
+> **Preferred alternative, and the recommendation:** keep them on separate pages. The Regime page shows the Regime Score; the existing dashboard shows the Stress Score. Cross-link with a labelled link (*"Systematic stress: 41/100 — higher is worse →"*) rather than embedding. Cheapest way to eliminate the risk entirely.
+
+---
+
+## 19. risk-dashboard Model Reference — All 8 Components
+
+> ✅ **All of this is implemented and in production.** Thresholds are `(calm, stress)` from `config.THRESHOLDS`; sub-weights from `config.SUB_WEIGHTS`; derivations from `metrics.py`. Component score = weighted mean of available sub-metrics; composite = weighted mean of available components × 100. Missing sub-metrics are dropped and remaining weights renormalised.
+
+### 19.1 Carry / FX stress — weight 20.0 (largest)
+
+| Sub-metric | Sub-wt | Derivation | Calm | Stress |
+|---|---:|---|---:|---:|
+| `usdjpy_1w_pct` | 0.40 | USDJPY % change over 7 days | −1.0% | −4.0% |
+| `usdjpy_1m_pct` | 0.35 | USDJPY % change over 30 days | −2.0% | −7.0% |
+| `carry_cross_drawdown_pct` | 0.25 | **Worst** 60-day drawdown across AUDJPY, NZDJPY, MXNJPY, EURJPY | −2.0% | −8.0% |
+
+The 1-week move outweighs the 1-month: acceleration matters more than trend for an unwind. The cross drawdown takes the **minimum** across four pairs because a carry unwind rarely hits every cross at once.
+
+*Rationale:* a strengthening yen is the transmission channel — it forces leveraged carry positions closed, and those positions are funded into risk assets worldwide.
+
+### 19.2 Rate differentials — weight 10.0
+
+| Sub-metric | Sub-wt | Derivation | Calm | Stress |
+|---|---:|---|---:|---:|
+| `diff_2y_change_3m` | 0.70 | 90-day change in (US 2y − JP 2y), pp | −0.15pp | −0.75pp |
+| `diff_2y_level` | 0.30 | US 2y − JP 2y, pp | 1.0pp | 4.0pp |
+
+*Rationale:* a wide differential is the **incentive** to carry; a narrowing one removes the reason to hold. Compression turns a crowded trade into an exit. Level alone is fuel, not fire — which is why it is weighted 0.30 and why the escalation rule (§7.10) requires level **and** yen strength together.
+
+> **Known approximation, disclosed in the UI.** The JGB leg is a single manual number, so the *history* of the differential is the US leg shifted by today's JGB yield. The shape — which is what compression detection needs — is dominated by the far more volatile US leg.
+
+### 19.3 Treasury volatility — weight 10.0
+
+| Sub-metric | Sub-wt | Derivation | Calm | Stress |
+|---|---:|---|---:|---:|
+| `rate_vol_pctile` | 1.00 | Percentile of MOVE (or realised-vol proxy from DGS10) over trailing 3y | 60th | 92nd |
+
+Scored as a **percentile** specifically so the real MOVE index and the fallback proxy are interchangeable. `m.rate_vol_source` reports which is live and is shown in the UI.
+
+### 19.4 Yield curve — weight 5.0 (smallest)
+
+| Sub-metric | Sub-wt | Derivation | Calm | Stress |
+|---|---:|---|---:|---:|
+| `curve_steepening_3m` | 1.00 | 90-day change in the 10y−2y slope, pp | +0.25pp | +1.00pp |
+
+Prefers FRED's own `T10Y2Y` over subtracting two series, which handles days where one leg is missing.
+
+*Rationale:* rapid bull-steepening (front end falling as the market prices cuts) has historically been a better recession tell than the inversion itself.
+
+### 19.5 Equity volatility — weight 15.0
+
+| Sub-metric | Sub-wt | Derivation | Calm | Stress |
+|---|---:|---|---:|---:|
+| `vix_level` | 0.60 | `^VIX`, FRED `VIXCLS` fallback | 15.0 | 32.0 |
+| `vix_term_structure` | 0.40 | `^VIX / ^VIX3M` | 0.92 | 1.05 |
+
+*Rationale:* term structure matters more than level. VIX 20 in contango is normal uncertainty; VIX 20 in backwardation is the market pricing something breaking this month.
+
+> Note the deliberate threshold difference from Meridian, which uses 13.0 → 30.0 for the same VIX (§7.4). Meridian scores *risk appetite*; the dashboard scores *stress*. Same input, different question, different calibration.
+
+### 19.6 Credit spreads — weight 15.0
+
+**Primary path** (`credit_kind == "oas"`, FRED `BAMLH0A0HYM2`):
+
+| Sub-metric | Sub-wt | Derivation | Calm | Stress |
+|---|---:|---|---:|---:|
+| `hy_oas_change_1m` | 0.60 | 30-day change in HY OAS, pp | +0.10pp | +0.90pp |
+| `hy_oas_level` | 0.40 | HY OAS level, pp | 3.0pp | 6.0pp |
+
+**Fallback path** (`credit_kind == "ratio"`, when FRED OAS is unavailable):
+
+| Sub-metric | Sub-wt | Derivation | Calm | Stress |
+|---|---:|---|---:|---:|
+| `hyg_lqd_drawdown_pct` | 1.00 | HYG/LQD ratio drawdown from its 180-day high | −1.0% | −5.0% |
+
+Rate of change outweighs level: credit usually reprices risk before equities do, which is what makes it worth watching daily. `m.credit_source` names the live path in the UI.
+
+### 19.7 Leverage / margin debt — weight 15.0
+
+| Sub-metric | Sub-wt | Derivation | Calm | Stress |
+|---|---:|---|---:|---:|
+| `margin_debt_yoy` | 0.55 | FINRA debit balances, YoY % | +10.0% | +30.0% |
+| `margin_debt_vs_peak` | 0.45 | % of all-time-high debit balance | 90% | 100% |
+
+Also computed and displayed but **not scored**: `mom_pct`, `net_credit_musd` (free credit minus debit; negative = investors net borrowers), `pct_of_spx_mktcap`, `peak_month`.
+
+> **Placeholder handling — the important part.** If `MarginStats.is_placeholder` is true or `latest_debit_musd` is null, **both sub-metrics are passed as `None`, the whole component drops out, and the remaining seven components are renormalised.** Placeholder data is never scored as calm. The UI states which of the three cases applies.
+
+*Rationale:* leverage does not cause a selloff; it sets how violent one becomes. Record margin debt still rising is the condition under which an ordinary 5% drop becomes a forced-selling 15%.
+
+### 19.8 Commodity / inflation shock — weight 10.0
+
+| Sub-metric | Sub-wt | Derivation | Calm | Stress |
+|---|---:|---|---:|---:|
+| `oil_abs_move_1m` | 0.60 | **`abs()`** of WTI 30-day % change | 8.0% | 25.0% |
+| `oil_vol_pctile` | 0.40 | Percentile of WTI 20-day realised vol over trailing 3y | 60th | 90th |
+
+The absolute value is deliberate: a spike is a supply/inflation shock, a collapse is a demand/growth shock, and **both constrain what central banks can do.** Direction is discarded; size is the signal.
+
+### 19.9 Weight summary and the escalation layer
+
+| Component | Weight | Share |
+|---|---:|---:|
+| Carry / FX | 20.0 | 20% |
+| Equity volatility | 15.0 | 15% |
+| Credit spreads | 15.0 | 15% |
+| Leverage | 15.0 | 15% |
+| Rate differentials | 10.0 | 10% |
+| Treasury volatility | 10.0 | 10% |
+| Commodity | 10.0 | 10% |
+| Yield curve | 5.0 | 5% |
+| **Total** | **100.0** | |
+
+All eight are overridable live from the sidebar without editing `config.py`.
+
+Escalation rules (§7.10) floor the composite *after* the weighted average. They fire on **combinations** and are the reason the model is not just an average — see `_check_escalations()` for the exact predicates.
+
+### 19.10 Displayed but not scored
+
+Shown in the UI for context, contributing nothing to the composite: DXY, S&P 500 level / 1w / drawdown from 365-day high, NDX, gold and copper levels and 1w changes, IG OAS, 60-day stock–bond correlation, US 30y, Fed funds, BOJ rate, policy gap, FOMC/BOJ countdowns.
+
+The stock–bond correlation is worth watching without scoring: when it turns **positive**, bonds stop hedging equities and every 60/40-style portfolio is more fragile than its historical volatility suggests.
+
+---
+
+## 20. Daily Operating Workflow
+
+### 20.1 Morning checklist (~5 minutes)
+
+| # | Action | Where | Time | Look for |
+|---:|---|---|---|---|
+| 1 | Open the dashboard | `streamlit run app.py` | 30s | **Stress Score** and band |
+| 2 | Check coverage | Overview banner | 5s | **< 100% means components were excluded** |
+| 3 | Check escalations | Overview | 10s | Any fired rule — read its description |
+| 4 | Read the explanation | Overview | 30s | Top 3 contributing components |
+| 5 | Scan the Watchlist tab | Watchlist | 60s | The morning shortlist |
+| 6 | Check the data-sources panel | Sidebar | 10s | Rate-limit or fallback warnings |
+| 7 | Run the regime engine | `python run_regime.py` | 1–3 min | **Regime Score**, Capital Availability, favored sectors |
+| 8 | Compare the two | — | 30s | **Disagreement is information** — see below |
+
+**Step 8 is the one worth doing slowly.** The two models answer different questions on different calibrations. When they disagree, that is a signal, not a bug:
+
+| Stress Score | Regime Score | Reading |
+|---|---|---|
+| Low | Risk-On | Aligned. Conditions supportive. |
+| High | Risk-Off | Aligned. Reduce risk. |
+| **Low** | **Risk-Off** | Nothing is breaking, but money or appetite is absent. Grinding, low-conviction tape. |
+| **High** | **Risk-On** | Liquidity abundant *and* something is cracking. Historically the most dangerous quadrant — leverage is present and stress is rising. Treat with the most caution. |
+
+### 20.2 What must run locally vs what is view-only
+
+| Task | Where | Why |
+|---|---|---|
+| **Streamlit dashboard** | Anywhere | Live fetch, no DB. Yahoo 429 possible on shared IPs → panel says so |
+| **`run_regime.py`** | Anywhere; **local preferred** | ~10 Yahoo calls. Degrades to FRED fallbacks under 429 (§23.3 shows this happening) |
+| **`run_data.py` full universe** | 🔴 **LOCAL ONLY** | ~530 tickers. Cloud/shared IPs get 429 regardless of pacing |
+| **`run_data.py --stage filings`** | Anywhere | SEC EDGAR, no Yahoo. Needs `SEC_USER_AGENT` |
+| **`run_data.py --stage institutional`** | Anywhere | SEC EDGAR only |
+| **`import_finra.py`** | Anywhere | Local file conversion |
+| **Reading `regime_latest.json` / DB** | Anywhere | View-only, no network |
+
+**Rule of thumb:** anything touching Yahoo **in bulk** is local-only. Everything else travels.
+
+### 20.3 Cadence
+
+| Frequency | Task | Command |
+|---|---|---|
+| **Daily** | Dashboard check | `streamlit run app.py` |
+| **Daily** | Regime engine (builds trend history) | `python run_regime.py` |
+| **Weekly** | Full data ingest, local | `python run_data.py` |
+| **Weekly** | Step 4 review (see §20.4) | `--complete-step opportunity_filter` |
+| **Monthly** | FINRA margin debt | `python import_finra.py --xlsx …` |
+| **Quarterly** | 13-F refresh (filed ~45d after quarter end) | `python run_data.py --stage institutional` |
+
+> **Running `run_regime.py` daily is not optional if you want §18.5's trend charts.** `regime_history` has one row per *engine run*. Skipped days are permanent gaps — there is no backfill.
+
+### 20.4 How Step 4 is captured — ✅ implemented
+
+Steps 1–3 are marked complete automatically by `mark_auto_steps()` when the regime engine runs, because running it *is* performing them. Each auto-completion stores the actual finding as its note, so the log doubles as a history of what the process said each week:
+
+```
+macro_vol_check     → "Strong Risk-On · composite 90/100 · behaviour 94.8"
+capital_assessment  → "Capital High · money score 85.9"
+sector_rotation     → "Sector scan run with the regime engine"
+```
+
+**Step 4 — Opportunity Filter & Edge Review — is `auto: false` and is never auto-completed.** Reviewing candidates and articulating why an edge exists is the part that cannot be automated; auto-completing it would turn the checklist into theatre.
+
+**Capture mechanism (the only one today — CLI):**
+
+```bash
+python run_regime.py --complete-step opportunity_filter \
+    --notes "Reviewed 6 names in XLK/XLF. Long NVDA on datacentre capex; edge is
+             the Street modelling FY27 gross margin 300bp below guidance."
+```
+
+This writes one row to `weekly_process_log` (`step_id`, `completed_at`, `notes`). The step reports `current` for `staleness_days: 7`, then flips to `due`. Invalid step IDs are rejected with the valid list.
+
+**Where the notes go.** `weekly_process_log` is append-only — the primary key includes the timestamp — so every completion is kept permanently. `_hydrate()` reads `MAX(completed_at)` per step for the current status, but the full history remains queryable:
+
+```sql
+SELECT completed_at, notes FROM weekly_process_log
+WHERE step_id = 'opportunity_filter' ORDER BY completed_at DESC;
+```
+
+**This is the system's trade-rationale journal.** It is the only place a "why did I take this position" record exists.
+
+> **📋 Gap.** There is **no UI for step 4** — CLI only, and nothing reads the note history back. §18.3 widget G should provide a text-area completion control and a reverse-chronological view of past notes. Without that, the journal is write-only in practice.
+
+---
+
+## 21. Acceptance Criteria — Definition of Done
+
+> Scope: the **Regime & Capital Flow page** (§18), the next increment. Every criterion is objectively verifiable. `AC-n` numbering is for use in review.
+
+### 21.1 Data loading
+
+| ID | Criterion | How to verify |
+|---|---|---|
+| AC-1 | Page renders `regime_latest.json` without importing any Meridian module | `grep` the page source for `from regime` / `import regime` → no matches |
+| AC-2 | Reads `regime_history` **read-only** | Connection uses `mode=ro`; page cannot write |
+| AC-3 | Reads `system_status.json` if present, renders fully if absent | Rename the file; page still renders |
+| AC-4 | No network calls | Disconnect network; page renders from disk |
+| AC-5 | Page load < 2s with 180 days of history | Time it |
+
+### 21.2 Correctness — the numbers must match the engine
+
+| ID | Criterion | How to verify |
+|---|---|---|
+| AC-6 | Regime Score, label, Money, Behaviour, Capital Status, coverage all match `regime_latest.json` exactly | Field-by-field against the JSON |
+| AC-7 | All 11 indicators listed, including unavailable ones | Count rows = 5 + 6 |
+| AC-8 | Unavailable indicators show `error`, never 0 or blank | Force a null; confirm text |
+| AC-9 | Panel B's stated arithmetic evaluates correctly | `√(85.9 × 94.8) = 90.2` ✓ |
+| AC-10 | All 11 sectors and 10 asset classes shown, correctly sorted | Compare with console output |
+| AC-11 | Asset-class stance words derived locally (file lacks `stance`) | Confirm `+2` → "Strong Overweight" |
+
+### 21.3 States — §18.6, all ten
+
+| ID | Criterion | How to verify |
+|---|---|---|
+| AC-12 | State 1: missing `regime_latest.json` → empty state with the exact command, **not** an error/stack trace | Rename the file |
+| AC-13 | State 2: `run_date` < today → stale banner with day count | Edit `run_date` |
+| AC-14 | State 3: coverage < 0.60 → provisional treatment **and** warning text | Use the real 2026-08-21 file (coverage 0.735, behaviour 0.47) |
+| AC-15 | State 4: null half → surviving half shown, arithmetic suppressed, banner shown | Null `behavior_score` |
+| AC-16 | State 5: defaulted 50.0 never reads as plain "Neutral" | Inject the defaulting warning |
+| AC-17 | State 6: `rate_limited` → red notice, section H auto-expanded; `aborted` adds the partial-prices line | Set the flags |
+| AC-18 | State 7: any `fell_back` → amber notice naming requested → effective | Use the real file (`transcripts` fell back) |
+| AC-19 | State 8: all `momentum_pct` null → "matrix-only" caption on section E | Use the real file |
+| AC-20 | State 9: missing status file → section H degrades, page unaffected | Rename it |
+| AC-21 | State 10: null indicator → greyed row, weight struck through | Use the real file (4 null indicators) |
+| AC-22 | **Every `warnings[]` entry rendered verbatim, none truncated** | Compare strings exactly |
+
+### 21.4 Trends — §18.5
+
+| ID | Criterion | How to verify |
+|---|---|---|
+| AC-23 | Y-axis fixed 0–100, never auto-scaled | Feed a 5-point range; axis stays 0–100 |
+| AC-24 | Regime bands shaded at 30 / 43 / 57 / 70 and labelled | Visual |
+| AC-25 | Window selector 30/90/180/All, default 90 | Click each |
+| AC-26 | **Gaps render as gaps; no silent forward-fill** | Delete a mid-series row; confirm a visible break |
+| AC-27 | < 2 rows → the specified message, not a blank panel or lone point | Empty the table |
+| AC-28 | Capital history drawn as blocks, not a line | Visual |
+| AC-29 | Direction stated as a **word** (`improving`/`deteriorating`/`flat`) over 5 and 20 runs | Confirm text present |
+
+### 21.5 Mobile — §18.4
+
+| ID | Criterion | How to verify |
+|---|---|---|
+| AC-30 | No horizontal body scroll at 320/375/390/768px | Resize |
+| AC-31 | Tables scroll inside their own container | Wide table at 320px |
+| AC-32 | **Warning chip visible without scrolling at 390px** | Load state 3 on a phone viewport |
+| AC-33 | Touch targets ≥ 44×44px | Inspect |
+| AC-34 | No hover-only information | Keyboard/touch traversal |
+| AC-35 | Charts legible at 320px; legend below plot | Visual |
+
+### 21.6 Dual-score safety — §18.7
+
+| ID | Criterion | How to verify |
+|---|---|---|
+| AC-36 | The word "score" never appears unqualified | Search rendered text |
+| AC-37 | If both scores appear, each carries its direction inline | Visual |
+| AC-38 | The two are never adjacent on a shared axis or tile row | Visual |
+| AC-39 | **No arithmetic combines the two** | Code review |
+| AC-40 | If separate pages: cross-link states direction (*"higher is worse"*) | Visual |
+
+### 21.7 Non-regression and process
+
+| ID | Criterion | How to verify |
+|---|---|---|
+| AC-41 | **No file outside the new page's own files is modified** | `git diff --stat` |
+| AC-42 | Existing Streamlit dashboard runs unchanged | `streamlit run app.py`, all 8 tabs |
+| AC-43 | `run_regime.py` and `run_data.py` unchanged | `git diff` |
+| AC-44 | Page works when Meridian has never run | Fresh clone, no `output/` |
+| AC-45 | Unit tests for any new pure logic (age formatting, direction words, band lookup) | `pytest` green |
+| AC-46 | This spec updated to mark §18 built, with any deviations recorded | Diff review |
+
+**Definition of Done:** AC-1 … AC-46 all pass, verified on the real 2026-08-21 `regime_latest.json` (which conveniently exercises states 3, 7, 8 and 10 simultaneously), plus one fabricated file per remaining state.
+
+---
+
+## 22. Known Environment Issues
+
+### 22.1 Windows logging encoding — ✅ Fixed
+
+**Symptom:** `UnicodeEncodeError` mid-run on Windows 11 / Python 3.14, from inside a logging handler — a stack trace for what is purely a display concern. Triggered by the arrow in `"Provider for market_data → yfinance"`.
+
+**Cause:** Python opened both the log file and the console stream with the system locale encoding, a legacy code page (cp1252) on a Windows console. `print()` was unaffected because CPython writes to a Windows console through the **wide-character API**, which is why the banners and box-drawing characters rendered fine while logging failed on the same stream — a genuinely confusing signature.
+
+**Fix** (`core/logging_setup.py`): `sys.stdout` and `sys.stderr` are reconfigured to UTF-8 with `errors="replace"`, and the `FileHandler` is opened with `encoding="utf-8"`. Verified: `Provider for market_data → yfinance ✓ ✗ ▲` writes and reads back intact.
+
+**If it recurs** (older Python, an embedded console): set `PYTHONUTF8=1` or `PYTHONIOENCODING=utf-8`. Do not strip the non-ASCII characters — they are load-bearing in the console report.
+
+### 22.2 Nested folder path — ⚠️ Environmental, unresolved
+
+The owner's checkout sits at:
+
+```
+…\Investment\daily_dashboard\risk-dashboard\daily_dashboard\
+```
+
+`daily_dashboard` appears **twice**, and the outer one is an unrelated parent folder. **The innermost is the Meridian package.**
+
+**Consequences.** Ambiguous instructions ("cd to daily_dashboard"), `cd ..` landing somewhere plausible but wrong, and `paths.margin_debt_csv: ../data/margin_debt.csv` resolving relative to the Meridian package — correct only from the innermost directory.
+
+**Rule:** run `run_data.py` and `run_regime.py` **from `<repo>/daily_dashboard/`**, and `app.py` from `<repo>/`. Verify with:
+
+```powershell
+Test-Path .\config.yaml -and (Test-Path .\run_regime.py)   # in daily_dashboard
+Test-Path .\app.py                                          # in the repo root
+```
+
+**Recommendation:** re-clone to an unambiguous path, e.g. `C:\dev\risk-dashboard`. Cosmetic, but it has already caused confusion once.
+
+### 22.3 First-run ratio and market-cap issues — ✅ Fixed
+
+**Symptom:** `fcf_yield` NULL for the entire universe **while the run reported success.** The log showed `market caps for 0 tickers`.
+
+**Cause — an ordering bug, and the most instructive failure so far.** `compute_all_ratios` sourced shares outstanding from `fundamental_ratios.shares_outstanding`, but `fundamental_ratios` is written **by that same stage**. On a first run it is empty, so every lookup missed. On a *second* run it would partially work — meaning the bug was invisible to anyone testing on an existing database.
+
+**Fix:** added `fundamentals.market_caps(db, period)`, reading shares outstanding from the **raw `fundamentals` table**, and `run_data.py` stage 4 now calls it. Verified by code path; **a live full run must confirm the column populates** (§10.2).
+
+**Other first-run behaviours that are correct but look wrong:**
+
+| Observation on a fresh database | Explanation |
+|---|---|
+| Stage 2 downloads from 2015-01-01, very slow | First fetch only. Later runs are incremental with a 5-day overlap for vendor restatements. |
+| `price_coverage` all zeros in `system_status.json` | Stage 2 has not completed. See the real example in §17.2. |
+| Universe reports `source=cache` immediately | Cached for `refresh_days: 7`. Force with `--force-universe`. |
+| Snapshot tables have exactly one row per ticker | By design — they accumulate one snapshot per run. |
+| Trend charts unavailable | `regime_history` needs ≥2 runs (§18.5). |
+| Sector scan is matrix-only | Yahoo 429 or a first run with no price data (§18.6 state 8). |
+
+**Recommended first-run sequence** — proves the pipeline in ~2 minutes before committing to a multi-hour run:
+
+```powershell
+python run_data.py --limit 20 --no-13f     # smoke test
+python run_regime.py                       # Layer 0 needs no database
+python run_data.py                         # the full run
+```
+
+### 22.4 Other environment notes
+
+| Issue | Impact | Handling |
+|---|---|---|
+| `source .venv/bin/activate` fails in PowerShell | Bash syntax; leads to global installs | Use `.\.venv\Scripts\Activate.ps1` |
+| PowerShell execution policy blocks activation | Cannot enter the venv | `Set-ExecutionPolicy -Scope Process RemoteSigned` |
+| `SEC_USER_AGENT` unset | Filing stages refuse to start | Set it; SEC requires a real contact address |
+| Yahoo 429 in the dev sandbox | Stages 2–7 cannot be verified there | Structural. Verify locally |
+| No `.env` file | FMP/Polygon fall back with a warning | Expected; visible in `providers[].note` |
+
+---
+
+## 23. Data Freshness
+
+> **As-of dates below are observed** from the real run of **2026-08-21**, not estimated. "Age" is days between the data's `as_of` and that run date.
+
+### 23.1 Meridian Layer 0 indicators
+
+| Indicator | Wt | Source | Series | Frequency | Publication lag | Observed as-of | Age |
+|---|---:|---|---|---|---|---|---:|
+| `mmf_aum` | 0.25 | FRED | `MMMFFAQ027S` | **Quarterly** | ~10 weeks after quarter end | 2026-01-01 | **232d** |
+| `net_liquidity` | 0.25 | FRED | `WALCL`, `WTREGEN`, `RRPONTSYD` | Weekly (Wed) + daily | ~1–2 business days | 2026-08-19 | 2d |
+| `reverse_repo` | 0.20 | FRED | `RRPONTSYD` | **Daily** | ~1 business day | 2026-08-20 | 1d |
+| `margin_debt` | 0.20 | FINRA CSV | manual | **Monthly** | ~4 weeks + manual download | 2026-06-01 | **81d** |
+| `financial_conditions` | 0.10 | FRED | `NFCI` | **Weekly** | ~1 week | 2026-08-14 | 7d |
+| `hy_credit_spread` | 0.25 | FRED | `BAMLH0A0HYM2` | Daily | ~1 business day | 2026-08-19 | 2d |
+| `vix_level` | 0.22 | Yahoo → **FRED fallback** | `^VIX` → `VIXCLS` | Daily | Real-time → 1 business day | 2026-08-19 | 2d |
+| `copper_gold_ratio` | 0.15 | Yahoo | `HG=F / GC=F` | Daily | Real-time (~15m delay) | **null (429)** | — |
+| `audjpy` | 0.15 | Yahoo | `AUDJPY=X` | Daily | Real-time | **null (429)** | — |
+| `vix_term_structure` | 0.13 | Yahoo | `^VIX / ^VIX3M` | Daily | Real-time | **null (429)** | — |
+| `high_beta_vs_defensive` | 0.10 | Yahoo | `SPHB/SPLV` → `XLY/XLP` | Daily | Real-time | **null (429)** | — |
+
+**Two observations that matter more than the table.**
+
+**The highest-weighted money indicator is the stalest.** `mmf_aum` carries 0.25 — a quarter of the Money Score — on data **232 days old**. That is not a bug: `MMMFFAQ027S` comes from the quarterly Financial Accounts release, so this is as current as the series gets. But it means **the Money Score cannot respond to a liquidity shift inside a quarter through this channel.** Combined with `margin_debt` (0.20, 81 days old), **45% of the Money Score's weight sits on data more than two months old.** A UI must show these ages (§18.3, §23.4). Whether that weighting is right is a modelling question for the owner, not a defect.
+
+**The Behaviour Score is the fragile half.** Four of its six indicators are Yahoo-only with no FRED fallback — 0.53 of 1.00 weight. When Yahoo 429s, behaviour coverage collapses to 0.47. Both survivors happen to have FRED paths, which is the only reason the score existed at all on 2026-08-21.
+
+### 23.2 risk-dashboard feeds
+
+| Feed | Source | Frequency | Lag | Cache |
+|---|---|---|---|---|
+| FX (USDJPY, crosses, DXY) | Yahoo | Continuous | ~15 min | 30 min |
+| Equity indices, VIX, VIX3M | Yahoo | Continuous | ~15 min | 30 min |
+| Commodities (WTI, gold, copper) | Yahoo | Continuous | ~15 min | 30 min |
+| US yields `DGS2/10/30`, `T10Y2Y` | FRED | Daily | ~1 business day | 30 min |
+| Fed funds `DFF` | FRED | Daily | ~1 business day | 30 min |
+| HY/IG OAS | FRED | Daily | ~1 business day | 30 min |
+| `VIXCLS`, `DCOILWTICO` (fallbacks) | FRED | Daily | 1 business day – 1 week | 30 min |
+| **JP 10y** `IRLTLT01JPM156N` | FRED | **Monthly** | **up to ~6 weeks** | 30 min |
+| **JP overnight** `IRSTCI01JPM156N` | FRED | **Monthly** | ~6 weeks | 30 min |
+| **JP 3-month** `IR3TIB01JPM156N` | FRED | **Monthly** | ~6 weeks | 30 min |
+| **Margin debt** | FINRA CSV | **Monthly** | **~4 weeks + manual** | 60s |
+| FOMC / BOJ calendar | Hardcoded | Static | — | — |
+
+> **The JGB inputs are the weakest link in the Stress Score.** They feed `diff_2y` (§19.2) and both escalation predicates for `carry_unwind`. FRED has **no** 2-year Japanese series at all, so `JP2Y` is seeded from the **3-month interbank rate** — an anchor, not the real thing — and is monthly with a ~6-week lag. The sidebar seeds from FRED, shows the source and date, and allows a manual override; **the override is the intended daily workflow when the carry trade is the live question.**
+
+### 23.3 Freshness in practice — the 2026-08-21 run
+
+Reproduced because it is the clearest illustration of why §18.6 state 3 exists:
+
+```
+Regime Score  90.2   Strong Risk-On
+Money         85.9   coverage 100%
+Behaviour     94.8   coverage  47%     ← 4 of 6 indicators null (Yahoo 429)
+Overall coverage     73.5%
+warnings: ["Only 47% of behaviour indicator weight had data — treat this
+           score as provisional."]
+```
+
+A confident-looking **90.2 / Strong Risk-On** built from **two** behaviour indicators, both of which happened to score near 100. The model behaved exactly as designed — dropped the dead feeds, renormalised, warned loudly. **The risk is entirely in presentation:** a UI that renders `90.2 Strong Risk-On` without the coverage caveat converts a correctly-hedged output into a false signal. That is what AC-14, AC-22 and AC-32 exist to prevent.
+
+### 23.4 Recommended staleness badges
+
+| Age vs expected frequency | Badge | Treatment |
+|---|---|---|
+| ≤ 1 expected period | **Current** | Normal |
+| 1–2 periods | **Aging** | Muted date shown |
+| > 2 periods | **Stale** | Amber, date always visible |
+| Null | **No data** | Greyed, `error` shown, weight struck through |
+
+Compare against **expected frequency, not wall-clock days** — a quarterly series 60 days old is current; a daily series 60 days old is broken.
+
+---
+
+## 24. What I Could Not Confirm From Code
+
+> Everything above is drawn from the source unless listed here. This section is the honest boundary of the document.
+
+### 24.1 Could not verify — no live run available in this environment
+
+| # | Item | Why | How to close it |
+|---:|---|---|---|
+| 1 | **The `fcf_yield` fix populates the column** | Yahoo 429 blocks stages 2–7 in the sandbox. Verified by code path and unit test only. | Full local run; check `SELECT COUNT(*) FROM fundamental_ratios WHERE fcf_yield IS NOT NULL` |
+| 2 | **`price_coverage` values when populated** | Every observed run has `{null, 0, 0}` — stage 2 has never completed here. Field names and the queries behind them **are** confirmed (`market_data.coverage_report`: `MAX(date)`, `COUNT(DISTINCT ticker)`, and a count of tickers whose max date trails the global max). Only the populated values are unseen. | Full local run, then re-read `system_status.json` |
+| 3 | **`last_ingest.stages` values for stages 2–9** | Only `universe` has ever been observed. | Full local run |
+| 4 | **Insider parsed-vs-stored now agree** | Migration verified against a synthetic legacy database; not against real Form 4 volume. | Full local run; compare `stats.insider_rows` to `SELECT COUNT(*)` |
+| 5 | **Real-world Layer 1 runtime** | Never completed end-to-end here. | Time the local run |
+
+### 24.2 Could not verify — external and time-dependent
+
+| # | Item | Note |
+|---:|---|---|
+| 7 | **FRED publication lags in §23** | Series IDs, frequencies and observed as-of dates are confirmed from real output. The *lag* column is from general knowledge of each release schedule, **not** from code or a vendor calendar. Treat as indicative. |
+| 8 | **FOMC / BOJ dates in `config.py`** | Hardcoded and self-described as approximate. Not checked against federalreserve.gov or boj.or.jp. |
+| 9 | **`SP500_DIVISOR_BN = 8.40`** | Drifts with issuance and index changes. Not validated. Affects only the "margin debt as % of market cap" display, which is not scored. |
+| 10 | **Yahoo fundamentals accuracy** | Never cross-validated against a second source. The main input risk to Layer 2. |
+| 11 | **Whether Yahoo 429 behaviour differs on the owner's IP** | Sandbox-specific. The owner's Windows run succeeded where this environment cannot. |
+
+### 24.3 Design intent I inferred rather than read
+
+| # | Inference | Basis | Risk if wrong |
+|---:|---|---|---|
+| 12 | **Marimo/Polars rationale (§5.2)** | The preference was stated; the *reasons* are my reconstruction from the codebase's needs. | The real motivation may differ; the migration sequencing in §9 would need revisiting |
+| 13 | **Migration effort ratings** | Extrapolated from call-site counts (216 pandas / 234 Streamlit). No migration has been attempted. | Could be materially wrong in either direction. §13 recommends a timeboxed spike before committing |
+| 14 | **The morning-checklist quadrant table (§20.1)** | My synthesis of what the two models measure. **Not derived from code and not backtested.** | It is an interpretive aid, not a validated signal. Owner should confirm it matches their intent |
+| 15 | **Staleness badge thresholds (§23.4)** | Proposed by me. No such logic exists. | A design proposal, not a description |
+| 16 | **The entire §18 UI spec** | Synthesised from the data contracts, the stated requirement for trends, and the constraints in §16.1. **The owner has not reviewed it.** | Layout and widget choices are proposals. §18.6 states and §18.7 labelling rules are the parts I would argue for hardest |
+
+### 24.4 Discrepancies found — flagged, not fixed
+
+Per the instruction not to change code:
+
+| # | Location | Discrepancy |
+|---:|---|---|
+| 17 | `core/status.py` docstring | Claims `run_regime.py` writes `system_status.json`. **It does not** — no import, no call. §17.2 |
+| 18 | `regime/matrices.py` → `favored_sectors()` | Docstring promises a "top-half blended rank" check the code does not perform. §7.7 |
+| 19 | `run_regime.py` | `--json` stdout and `regime_latest.json` emit **different shapes** for the same payload. §17.1 |
+| 20 | `regime/indicators.py` | `IndicatorReading.label` is auto-titled from the key, producing `"Mmf Aum"`, `"Vix Level"`, `"Audjpy"`. Cosmetic; a UI should carry its own label map. §17.1 |
+
+None affects the correctness of any score. Items 17–19 will bite a developer building against these contracts, which is why they are recorded here rather than left to be discovered.
 
 ---
 
