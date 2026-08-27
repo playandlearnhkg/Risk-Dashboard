@@ -1,0 +1,56 @@
+{
+  "evaluation_sessions": 3814,
+  "holdout_sessions": 252,
+  "results": [
+    {
+      "target": "T2",
+      "instruments": 5,
+      "usable_sessions_per_instrument": {
+        "EEM": 2924,
+        "GLD": 3012,
+        "IWM": 2832,
+        "SPY": 2997,
+        "XLE": 2729
+      },
+      "mean_usable_sessions": 2898.8,
+      "n_raw": 14494,
+      "lag1_score": 0.0013,
+      "lag1_target": -0.00427,
+      "serial_factor": 0.99741,
+      "n_eff_serial": 14456,
+      "rho_bar_measured": 0.42044,
+      "k_eff": 1.8644,
+      "n_eff_total": 5390,
+      "calendar_blocks": 57,
+      "blocks_ok": true,
+      "detectable_ic_single": 0.04086,
+      "detectable_ic_two_trial": 0.04372,
+      "detects_plausible_band_top": false
+    },
+    {
+      "target": "T3",
+      "instruments": 5,
+      "usable_sessions_per_instrument": {
+        "EEM": 3060,
+        "GLD": 3162,
+        "IWM": 2963,
+        "SPY": 3126,
+        "XLE": 2872
+      },
+      "mean_usable_sessions": 3036.6,
+      "n_raw": 15183,
+      "lag1_score": -0.00204,
+      "lag1_target": -0.0281,
+      "serial_factor": 1.0,
+      "n_eff_serial": 15183,
+      "rho_bar_measured": 0.45592,
+      "k_eff": 1.7707,
+      "n_eff_total": 5377,
+      "calendar_blocks": 57,
+      "blocks_ok": true,
+      "detectable_ic_single": 0.04091,
+      "detectable_ic_two_trial": 0.04378,
+      "detects_plausible_band_top": false
+    }
+  ]
+}

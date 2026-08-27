@@ -30,6 +30,27 @@ MAX_INVALID_FRACTION = 0.05
 MAX_TICK_RATIO = 10.0          # declared vs inferred tick size
 MIN_SESSIONS_OPTION_A = 1762   # 250 warm-up + 1260 evaluation + 252 holdout
 
+# Scope of the degenerate-bar gate. PRE-REGISTERED, never passed on a whim.
+#
+#   WHOLE_INSTRUMENT  Run 1 (docs/preregistration.yaml). An instrument whose
+#                     whole-instrument degenerate fraction exceeds 5% is
+#                     refused entry outright. This is the DEFAULT and Run 1's
+#                     behaviour is unchanged by anything below.
+#
+#   STUDY_B_SESSION   Study B (docs/preregistration-study-B.yaml,
+#                     data.eligibility_rule). Study B reads ONE bar per
+#                     session, so admission moves to the session: the E1-E6
+#                     rule decides each session individually, and instruments
+#                     are admitted by pooled AND per-era eligible rate.
+#
+# Under STUDY_B_SESSION the whole-instrument fraction is still MEASURED and
+# reported - it is simply no longer the admission test, because it is a
+# statement about bars this study never reads. The 5% figure itself does not
+# move under either scope; only what it is applied to does.
+WHOLE_INSTRUMENT = "whole_instrument"
+STUDY_B_SESSION = "study_b_session"
+GATE_SCOPES = (WHOLE_INSTRUMENT, STUDY_B_SESSION)
+
 
 @dataclass
 class InstrumentAudit:
@@ -74,7 +95,9 @@ def _file_hash(path: str) -> str:
     return h.hexdigest()
 
 
-def audit_instrument(spec: io.InstrumentSpec, bar_minutes: int) -> tuple[pd.DataFrame, InstrumentAudit]:
+def audit_instrument(spec: io.InstrumentSpec, bar_minutes: int,
+                     gate_scope: str = WHOLE_INSTRUMENT,
+                     ) -> tuple[pd.DataFrame, InstrumentAudit]:
     """Load one instrument and run every integrity check against it."""
     a = InstrumentAudit(symbol=spec.symbol)
 
@@ -172,11 +195,21 @@ def audit_instrument(spec: io.InstrumentSpec, bar_minutes: int) -> tuple[pd.Data
     a.zero_range_bars = int(((df["high"] - df["low"]) == 0).sum())
 
     if a.invalid_fraction > MAX_INVALID_FRACTION:
-        a.errors.append(
-            f"{a.invalid_fraction:.1%} of bars are degenerate (limit "
-            f"{MAX_INVALID_FRACTION:.0%}); this instrument/timeframe is too "
-            f"illiquid for the study"
-        )
+        if gate_scope == WHOLE_INSTRUMENT:
+            a.errors.append(
+                f"{a.invalid_fraction:.1%} of bars are degenerate (limit "
+                f"{MAX_INVALID_FRACTION:.0%}); this instrument/timeframe is too "
+                f"illiquid for the study"
+            )
+        else:
+            a.warnings.append(
+                f"{a.invalid_fraction:.1%} of bars are degenerate, above the "
+                f"{MAX_INVALID_FRACTION:.0%} whole-instrument limit. NOT an abort "
+                f"under gate_scope='{STUDY_B_SESSION}': admission is per-session "
+                f"(E1-E6) plus the pooled and per-era instrument floors in "
+                f"docs/preregistration-study-B.yaml. Recorded, not waived - most "
+                f"of these bars are midday and afternoon bars Study B never reads."
+            )
 
     # --- Vendor fill artefacts ---------------------------------------------
     same = (df[["open", "high", "low", "close"]]
@@ -305,6 +338,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--manifest", default="data/manifest.yaml")
     ap.add_argument("--out", default="data/clean")
     ap.add_argument("--bar-minutes", type=int, default=5)
+    ap.add_argument("--gate-scope", choices=GATE_SCOPES, default=WHOLE_INSTRUMENT,
+                    help="scope of the degenerate-bar gate. PRE-REGISTERED: "
+                         "'whole_instrument' is Run 1; 'study_b_session' is "
+                         "declared in docs/preregistration-study-B.yaml")
     args = ap.parse_args(argv)
 
     specs = io.load_manifest(args.manifest)
@@ -315,10 +352,15 @@ def main(argv: list[str] | None = None) -> int:
     print("STAGE 1 - STEP 1: DATA VALIDATION")
     print("=" * 74)
     print(f"  manifest: {args.manifest}   instruments: {len(specs)}")
+    print(f"  gate scope: {args.gate_scope}")
+    if args.gate_scope != WHOLE_INSTRUMENT:
+        print("  NOTE: the degenerate-bar gate is scoped per the Study B "
+              "pre-registration.\n"
+              "  The 5% threshold is unchanged; admission moves to the session.")
 
     audits, frames, manifest_out = [], {}, []
     for spec in specs:
-        df, a = audit_instrument(spec, args.bar_minutes)
+        df, a = audit_instrument(spec, args.bar_minutes, args.gate_scope)
         audits.append(a)
         _print_audit(a)
         if a.ok and not df.empty:

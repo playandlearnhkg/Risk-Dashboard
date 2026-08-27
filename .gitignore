@@ -18,3 +18,8 @@ results/**
 __pycache__/
 *.pyc
 .venv/
+!results/**/power.json
+!results/**/canaries.json
+
+# Study B working data — same rule as Run 1: bars stay local.
+data/study_b/

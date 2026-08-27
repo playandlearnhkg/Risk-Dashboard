@@ -57,9 +57,16 @@ ATR_N = core.ATR_N                 # 20 five-minute bars, from the frozen score
 
 # --- The proposed rule's thresholds ---------------------------------------
 # Named so the sweep can vary them; the PROPOSED row is the recommendation.
+#
+# FROZEN_RULE is the accepted setting, recorded in
+# docs/preregistration-study-B.yaml (data.eligibility_rule). It is the single
+# source of truth for the thresholds; the sweep below reuses it by reference so
+# the two can never drift apart.
+FROZEN_RULE = {"atr_window_min": 16, "prior_density_min": 0.80, "max_gap_days": 5}
+
 VARIANTS = {
     "loose":    {"atr_window_min": 12, "prior_density_min": 0.60, "max_gap_days": 7},
-    "proposed": {"atr_window_min": 16, "prior_density_min": 0.80, "max_gap_days": 5},
+    "proposed": FROZEN_RULE,
     "strict":   {"atr_window_min": 20, "prior_density_min": 0.90, "max_gap_days": 4},
 }
 
